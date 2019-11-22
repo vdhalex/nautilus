@@ -85,7 +85,7 @@ struct virtio_gpu_config {
     le32 reserved;
 };
 
-typedef enum {
+enum virtio_gpu_ctrl_type {
     /* 2d commands */
     VIRTIO_GPU_CMD_GET_DISPLAY_INFO = 0x0100,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
@@ -115,7 +115,7 @@ typedef enum {
     VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID,
     VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
     VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
-} virtio_gpu_ctrl_type;
+};
 
 #define VIRTIO_GPU_FLAG_FENCE (1 << 0)
 
