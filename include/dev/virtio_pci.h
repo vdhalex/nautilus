@@ -147,7 +147,8 @@ struct virtio_pci_dev {
     *****************************************************************/
     struct virtio_pci_common_cfg *common;                // pointed to by the common cap
     uint32_t                      notify_off_multiplier; // from the notify cap
-    uint8_t                      *device_specific;       // dev specific cap
+    uint32_t			          *notify_base_addr;	 // from the notify cap
+    uint8_t                       *device_specific;       // dev specific cap
     // we use MSI-X, so we do not capture the ISR status cap
     // we will not use the alernative pci config and so don't capture the pci config access cap
     //

@@ -85,7 +85,7 @@ struct virtio_gpu_config {
     le32 reserved;
 };
 
-enum virtio_gpu_ctrl_type {
+typedef enum {
     /* 2d commands */
     VIRTIO_GPU_CMD_GET_DISPLAY_INFO = 0x0100,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
@@ -115,7 +115,7 @@ enum virtio_gpu_ctrl_type {
     VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID,
     VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
     VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
-};
+} virtio_gpu_ctrl_type;
 
 #define VIRTIO_GPU_FLAG_FENCE (1 << 0)
 
@@ -615,48 +615,123 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     struct virtq *vq = &virtq->vq;
 
     struct virtio_gpu_ctrl_hdr request;
-    request.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO; 
+    memset(&request, 0, sizeof(request));
 
-    struct virtio_gpu_resp_display_info response;
+    request.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+
+    struct virtio_gpu_resp_display_info disp_info;
 
     //fill hdr and buf for virtq descriptor
     struct virtq_desc *hdr_desc = &vq->desc[0];
 
     hdr_desc->addr = (uint64_t) &request;
-    hdr_desc->len = HEADER_DESC_LEN;
+    hdr_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
     hdr_desc->flags = 0;
     hdr_desc->next = 1;
     hdr_desc->flags |= VIRTQ_DESC_F_NEXT;
 
-
-
     struct virtq_desc *buf_desc = &vq->desc[1];
 
-    buf_desc->addr = (uint64_t) &response;
+    buf_desc->addr = (uint64_t) &disp_info;
     buf_desc->len = sizeof(struct virtio_gpu_resp_display_info);
-    //buf_desc->flags |= write ? 0 : VIRTQ_DESC_F_WRITE;
-    buf_desc->next = NULL;
-    //buf_desc->flags |= VIRTQ_DESC_F_NEXT;
+    buf_desc->flags |= VIRTQ_DESC_F_WRITE;
+    buf_desc->next = 0;
 
-    uint8_t usedidx = virtio_pci_atomic_load(&dev->common->queue_device);
+    le16 usedidx = virtq->vq.used->idx;
 
     DEBUG("Virtq used index: %d\n",  usedidx);
 
+    DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+    DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+    uint16_t og_last_used = virtq->last_seen_used;
+    uint16_t curr_last_used;
 
     vq->avail->ring[vq->avail->idx % vq->qsz] = 0;
     mbarrier();
     vq->avail->idx++;
     mbarrier(); 
 
-    DEBUG("past gpu get display info command");
-    DEBUG("Virtq used index: %d\n",  usedidx);
-/*
-    while(!virtq->vq.used->idx) {
+    dev->common->queue_select = 0;
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
 
-    }
+    virtio_pci_atomic_store(&dev->common->queue_enable, 1);
+
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    // print avail queue index
+    // registers may not be set up correctly
+
+    DEBUG("request initiated\n");
+    do {
+      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+    } while(!usedidx);
 
     DEBUG("Virtq used index: %d\n", virtq->vq.used->idx);
-*/
+
+    DEBUG("Display Info code: %x\n", disp_info.hdr.type);
+
+    // create local framebuffer
+
+    uint32_t *framebuffer = malloc(disp_info.pmodes[0].r.width * disp_info.pmodes[0].r.height * 4);
+    memset(&framebuffer, 0, sizeof(framebuffer));
+
+    // createw appropriate headers
+
+    struct virtio_gpu_ctrl_hdr create_2d;
+    create_2d.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+
+    struct virtio_gpu_resource_create_2d create_data;
+
+    DEBUG("screen resolution: %dx%d\n", disp_info.pmodes[0].r.width, disp_info.pmodes[0].r.height);
+
+    create_data.width = disp_info.pmodes[0].r.width;
+    create_data.height = disp_info.pmodes[0].r.height;
+    create_data.format = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+    create_data.resource_id = 0;
+
+    //fill hdr and buf for virtq descriptor
+    struct virtq_desc *hdr_desc_data = &vq->desc[2];
+
+    hdr_desc->addr = (uint64_t) &create_2d;
+    hdr_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
+    hdr_desc->flags = 0;
+    hdr_desc->next = 3;
+    hdr_desc->flags |= VIRTQ_DESC_F_NEXT;
+
+    struct virtq_desc *data_desc = &vq->desc[3];
+
+    data_desc->addr = (uint64_t) &create_data;
+    data_desc->len = sizeof(struct virtio_gpu_resource_create_2d);
+    data_desc->flags |= VIRTQ_DESC_F_WRITE;
+    data_desc->next = NULL;
+
+    vq->avail->ring[vq->avail->idx % vq->qsz] = 0;
+    mbarrier();
+    vq->avail->idx++;
+    mbarrier(); 
+
+    dev->common->queue_select = 0;
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    // print avail queue index
+    // registers may not be set up correctly
+
+    DEBUG("request initiated\n");
+    do {
+      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+    } while(usedidx != 2);
+
+    DEBUG("Virtq used index: %d\n", virtq->vq.used->idx);
+
+    DEBUG("Create 2D: %x\n", create_data.hdr.type);
 
     return 0;
 }

@@ -237,7 +237,9 @@ static void modern_config_cap(void *state, void *data)
 	case VIRTIO_PCI_CAP_NOTIFY_CFG: {
 	    struct virtio_pci_notify_cap * ncap = (struct virtio_pci_notify_cap *)cap;
 	    vdev->notify_off_multiplier = ncap->notify_off_multiplier;
+        vdev->notify_base_addr = (uint32_t *)(pci_dev_get_bar_addr(pdev,cap->bar) + cap->offset);
 	    DEBUG("notify config: multiplier set to %u\n",vdev->notify_off_multiplier);
+        DEBUG("notify config: base addr set to %p\n",vdev->notify_base_addr);
 	}
 	    break;
 	case VIRTIO_PCI_CAP_ISR_CFG:  {
@@ -588,7 +590,7 @@ static int virtqueue_init_legacy(struct virtio_pci_dev *dev)
             dev->virtq[i].vq.desc[j].next = j+1;
         }
         spinlock_init(&dev->virtq[i].lock);
-
+        
         // init last seen used
         dev->virtq[i].last_seen_used = 0;
 
