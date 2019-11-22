@@ -183,6 +183,18 @@ struct virtio_gpu_resource_create_2d {
     le32 height;
 };
 
+struct virtio_gpu_resource_attach_backing { 
+    struct virtio_gpu_ctrl_hdr hdr; 
+    le32 resource_id; 
+    le32 nr_entries; 
+}; 
+ 
+struct virtio_gpu_mem_entry { 
+    le64 addr; 
+    le32 length; 
+    le32 padding; 
+};
+
 /************************************************************
  ****************** gpu ops for kernel ********************
  ************************************************************/
@@ -610,7 +622,6 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     // for (i = 0; i < qsz; i++) {
     //   DEBUG("Next pointer of descriptor %d is %d\n", i, vq->desc[i].next);
     // }
-   
     struct virtio_pci_virtq *virtq = &dev->virtq[0];
     struct virtq *vq = &virtq->vq;
 
@@ -644,18 +655,14 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
     DEBUG("vq->used->idx: %d\n", vq->used->idx);
 
-    uint16_t og_last_used = virtq->last_seen_used;
-    uint16_t curr_last_used;
-
     vq->avail->ring[vq->avail->idx % vq->qsz] = 0;
     mbarrier();
     vq->avail->idx++;
     mbarrier(); 
 
     dev->common->queue_select = 0;
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-
     virtio_pci_atomic_store(&dev->common->queue_enable, 1);
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
 
     virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
 
@@ -674,10 +681,13 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
 
     DEBUG("Display Info code: %x\n", disp_info.hdr.type);
 
-    // create local framebuffer
+    for (int jj = 0; jj < 16; jj++) {
+        DEBUG("Screen %u has info: %u, %u, %ux%u, %u, %u\n", jj, disp_info.pmodes[jj].r.x, disp_info.pmodes[jj].r.y, disp_info.pmodes[jj].r.width, disp_info.pmodes[jj].r.height, disp_info.pmodes[jj].flags, disp_info.pmodes[jj].enabled);
+    }
 
-    uint32_t *framebuffer = malloc(disp_info.pmodes[0].r.width * disp_info.pmodes[0].r.height * 4);
-    memset(&framebuffer, 0, sizeof(framebuffer));
+    // create local framebuffer
+    uint64_t fb_length = disp_info.pmodes[0].r.width * disp_info.pmodes[0].r.height * 4;
+    uint32_t *framebuffer = malloc(fb_length);
 
     // createw appropriate headers
 
@@ -686,11 +696,9 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
 
     struct virtio_gpu_resource_create_2d create_data;
 
-    DEBUG("screen resolution: %dx%d\n", disp_info.pmodes[0].r.width, disp_info.pmodes[0].r.height);
-
     create_data.width = disp_info.pmodes[0].r.width;
     create_data.height = disp_info.pmodes[0].r.height;
-    create_data.format = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+    create_data.format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
     create_data.resource_id = 0;
 
     //fill hdr and buf for virtq descriptor
@@ -732,6 +740,56 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     DEBUG("Virtq used index: %d\n", virtq->vq.used->idx);
 
     DEBUG("Create 2D: %x\n", create_data.hdr.type);
+
+    struct virtio_gpu_ctrl_hdr backing_hdr;
+    backing_hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+
+    struct virtio_gpu_resource_attach_backing backing_data;
+    backing_data.resource_id = 0;
+    backing_data.nr_entries = 1;
+
+    struct virtio_gpu_mem_entry entry;
+    entry.addr = (uint64_t) framebuffer;
+    entry.length = fb_length;
+
+    //fill hdr and buf for virtq descriptor
+    struct virtq_desc *hdr_desc_backing = &vq->desc[4];
+
+    hdr_desc_backing->addr = (uint64_t) &backing_hdr;
+    hdr_desc_backing->len = sizeof(struct virtio_gpu_ctrl_hdr);
+    hdr_desc_backing->flags = 0;
+    hdr_desc_backing->next = 5;
+    hdr_desc_backing->flags |= VIRTQ_DESC_F_NEXT;
+
+    struct virtq_desc *backing_data_desc = &vq->desc[5];
+
+    backing_data_desc->addr = (uint64_t) &backing_data;
+    backing_data_desc->len = sizeof(struct virtio_gpu_resource_attach_backing);
+    backing_data_desc->flags |= VIRTQ_DESC_F_WRITE;
+    backing_data_desc->next = 6;
+
+    struct virtq_desc *entry_desc = &vq->desc[6];
+
+    entry_desc->addr = (uint64_t) &entry;
+    entry_desc->len = sizeof(struct virtio_gpu_mem_entry);
+    entry_desc->flags = 0;
+    entry_desc->next = NULL;
+
+    vq->avail->ring[vq->avail->idx % vq->qsz] = 4;
+    mbarrier();
+    vq->avail->idx++;
+    mbarrier(); 
+
+    dev->common->queue_select = 0;
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    do {
+      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+    } while(usedidx != 3);
 
     return 0;
 }
