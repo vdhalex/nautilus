@@ -195,6 +195,28 @@ struct virtio_gpu_mem_entry {
     le32 padding; 
 };
 
+struct virtio_gpu_set_scanout { 
+    struct virtio_gpu_ctrl_hdr hdr; 
+    struct virtio_gpu_rect r; 
+    le32 scanout_id; 
+    le32 resource_id; 
+};
+
+struct virtio_gpu_transfer_to_host_2d { 
+        struct virtio_gpu_ctrl_hdr hdr; 
+        struct virtio_gpu_rect r; 
+        le64 offset; 
+        le32 resource_id; 
+        le32 padding; 
+};
+
+struct virtio_gpu_resource_flush { 
+        struct virtio_gpu_ctrl_hdr hdr; 
+        struct virtio_gpu_rect r; 
+        le32 resource_id; 
+        le32 padding; 
+};
+
 /************************************************************
  ****************** gpu ops for kernel ********************
  ************************************************************/
@@ -463,6 +485,7 @@ static uint64_t select_features(uint64_t features)
 static int handler(excp_entry_t *exp, excp_vec_t vec, void *priv_data)
 {
     DEBUG("Interrupt invoked\n");
+    IRQ_HANDLER_END();
     return 0;
 }
 
@@ -717,7 +740,7 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     data_desc->flags |= VIRTQ_DESC_F_WRITE;
     data_desc->next = NULL;
 
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 0;
+    vq->avail->ring[vq->avail->idx % vq->qsz] = 2;
     mbarrier();
     vq->avail->idx++;
     mbarrier(); 
@@ -790,6 +813,131 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
 
       usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
     } while(usedidx != 3);
+
+
+    DEBUG("response:  %x\n", backing_data.hdr.type);
+    
+    struct virtio_gpu_ctrl_hdr setso_hdr;
+    setso_hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+
+    struct virtio_gpu_set_scanout setso;
+    setso.r=disp_info.pmodes[0].r;
+    setso.resource_id=0;
+    setso.scanout_id=0;
+    
+    struct virtq_desc *setso_cmd_desc = &vq->desc[7];
+
+    setso_cmd_desc->addr = (uint64_t) &setso_hdr;
+    setso_cmd_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
+    setso_cmd_desc->flags = VIRTQ_DESC_F_NEXT;
+    setso_cmd_desc->next = 8;
+    
+    struct virtq_desc *setso_desc = &vq->desc[8];
+
+    setso_desc->addr = (uint64_t) &setso;
+    setso_desc->len = sizeof(struct virtio_gpu_set_scanout);
+    setso_desc->flags |= VIRTQ_DESC_F_WRITE;
+    setso_desc->next = NULL;
+
+    vq->avail->ring[vq->avail->idx % vq->qsz] = 7;
+    mbarrier();
+    vq->avail->idx++;
+    mbarrier(); 
+
+    dev->common->queue_select = 0;
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    do {
+      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+    } while(usedidx != 4);
+
+    DEBUG("response:  %x\n", setso.hdr.type);
+
+    struct virtio_gpu_ctrl_hdr xfer_hdr;
+    xfer_hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+
+    struct virtio_gpu_transfer_to_host_2d xfer;
+    xfer.r=disp_info.pmodes[0].r;
+    xfer.offset = 0;
+    xfer.resource_id=0;
+    
+    struct virtq_desc *xfer_cmd_desc = &vq->desc[9];
+
+    xfer_cmd_desc->addr = (uint64_t) &xfer_hdr;
+    xfer_cmd_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
+    xfer_cmd_desc->flags = VIRTQ_DESC_F_NEXT;
+    xfer_cmd_desc->next = 10;
+    
+    struct virtq_desc *xfer_desc = &vq->desc[10];
+
+    xfer_desc->addr = (uint64_t) &xfer;
+    xfer_desc->len = sizeof(struct virtio_gpu_transfer_to_host_2d);
+    xfer_desc->flags |= VIRTQ_DESC_F_WRITE;
+    xfer_desc->next = NULL;
+
+    vq->avail->ring[vq->avail->idx % vq->qsz] = 9;
+    mbarrier();
+    vq->avail->idx++;
+    mbarrier(); 
+
+    dev->common->queue_select = 0;
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    do {
+      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+    } while(usedidx != 5);
+
+    DEBUG("response:  %x\n", xfer.hdr.type);
+
+    struct virtio_gpu_ctrl_hdr flush_hdr;
+    flush_hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+
+    struct virtio_gpu_resource_flush flush;
+    flush.r=disp_info.pmodes[0].r;
+    flush.resource_id=0;
+    
+    struct virtq_desc *flush_cmd_desc = &vq->desc[11];
+
+    flush_cmd_desc->addr = (uint64_t) &flush_hdr;
+    flush_cmd_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
+    flush_cmd_desc->flags = VIRTQ_DESC_F_NEXT;
+    flush_cmd_desc->next = 12;
+    
+    struct virtq_desc *flush_desc = &vq->desc[12];
+
+    flush_desc->addr = (uint64_t) &flush;
+    flush_desc->len = sizeof(struct virtio_gpu_resource_flush);
+    flush_desc->flags |= VIRTQ_DESC_F_WRITE;
+    flush_desc->next = NULL;
+
+    vq->avail->ring[vq->avail->idx % vq->qsz] = 11;
+    mbarrier();
+    vq->avail->idx++;
+    mbarrier(); 
+
+    dev->common->queue_select = 0;
+    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    do {
+      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+    } while(usedidx != 6);
+
+    DEBUG("response:  %x\n", flush.hdr.type);
+
+    while(1);
+    
 
     return 0;
 }
