@@ -183,6 +183,12 @@ struct virtio_gpu_resource_create_2d {
     le32 height;
 };
 
+struct virtio_gpu_resource_unref { 
+    struct virtio_gpu_ctrl_hdr hdr; 
+    le32 resource_id; 
+    le32 padding; 
+};
+
 struct virtio_gpu_resource_attach_backing { 
     struct virtio_gpu_ctrl_hdr hdr; 
     le32 resource_id; 
@@ -193,6 +199,12 @@ struct virtio_gpu_mem_entry {
     le64 addr; 
     le32 length; 
     le32 padding; 
+};
+
+struct virtio_gpu_resource_detach_backing { 
+        struct virtio_gpu_ctrl_hdr hdr; 
+        le32 resource_id; 
+        le32 padding; 
 };
 
 struct virtio_gpu_set_scanout { 
@@ -484,7 +496,7 @@ static uint64_t select_features(uint64_t features)
 
 static int handler(excp_entry_t *exp, excp_vec_t vec, void *priv_data)
 {
-    DEBUG("Interrupt invoked\n");
+    //DEBUG("Interrupt invoked\n");
     IRQ_HANDLER_END();
     return 0;
 }
@@ -504,6 +516,151 @@ static struct nk_dev_int ops = {
     .close = close,
 };
 
+
+#define ZERO(a) memset(a,0,sizeof(*a))
+
+static void dump_descriptors(struct virtq *vq, int start, int count)
+{
+    int i;
+    for (i=start;i<(start+count);i++) {
+	DEBUG("vq[%d] = %p len=%u flags=0x%hx next=%hu\n",
+	      i,
+	      vq->desc[i].addr,
+	      vq->desc[i].len,
+	      vq->desc[i].flags,
+	      vq->desc[i].next);
+    }
+}
+
+static int transact_base(struct virtio_pci_dev *dev,
+			 uint16_t qidx,
+			 uint16_t didx)
+{
+    struct virtio_pci_virtq *virtq = &dev->virtq[qidx];
+    struct virtq *vq = &virtq->vq;
+    uint16_t waitidx;
+    uint16_t usedidx;
+
+    //DEBUG("transact base didx=%u\n",didx);
+    
+    vq->avail->ring[vq->avail->idx % vq->qsz] = didx;
+    mbarrier();
+    vq->avail->idx++;
+    waitidx = vq->avail->idx;
+    mbarrier(); 
+
+    virtio_pci_atomic_store(&dev->common->queue_select, qidx);
+
+    // should not do this every time...
+    virtio_pci_atomic_store(&dev->common->queue_enable, 1);
+
+    //DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
+
+    //dump_descriptors(vq,0,8);
+
+    //DEBUG("starting transaction on index %hu\n",didx);
+    // fix to user the relevant notify addr 
+    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+
+    //DEBUG("request initiated\n");
+
+    do {
+      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
+      //DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
+      //DEBUG("vq->used->idx: %d\n", vq->used->idx);
+    } while(usedidx!=waitidx);
+
+    if (virtio_pci_desc_chain_free(dev,qidx,didx)) {
+	ERROR("Failed to free descriptor chain\n");
+	return -1;
+    }
+
+    //DEBUG("transaction complete\n");
+    
+    return 0;
+}
+    
+
+// 2 fragment transaction using polling
+// Note that every request and response
+// begins with a virtio_gpu_ctrl_hdr
+static int transact_rw(struct virtio_pci_dev *dev,
+		       uint16_t qidx,
+		       void    *req,
+		       uint32_t reqlen,
+		       void    *resp,
+		       uint32_t resplen)
+{
+    uint16_t desc_idx[2];
+
+    if (virtio_pci_desc_chain_alloc(dev, qidx, desc_idx, 2)) {
+	ERROR("Failed to allocate descriptor chain\n");
+	return -1;
+    }
+
+    //DEBUG("allocated chain %hu -> %hu\n",desc_idx[0],desc_idx[1]);
+
+    struct virtq_desc *desc[2] = {&dev->virtq[qidx].vq.desc[desc_idx[0]],
+				  &dev->virtq[qidx].vq.desc[desc_idx[1]]};
+
+    desc[0]->addr = (le64) req;
+    desc[0]->len = reqlen;
+    desc[0]->flags |= 0;
+    desc[0]->next = desc_idx[1];
+
+    desc[1]->addr = (le64) resp;
+    desc[1]->len = resplen;
+    desc[1]->flags |= VIRTQ_DESC_F_WRITE;
+    desc[1]->next = 0;
+
+    return transact_base(dev,qidx,desc_idx[0]);
+}
+
+// 3 fragment transaction using polling
+// Note that every request and response
+// begins with a virtio_gpu_ctrl_hdr
+static int transact_rrw(struct virtio_pci_dev *dev,
+			uint16_t qidx,
+			void    *req,
+			uint32_t reqlen,
+			void    *more,
+			uint32_t morelen,
+			void    *resp,
+			uint32_t resplen)
+{
+    uint16_t desc_idx[3];
+
+    if (virtio_pci_desc_chain_alloc(dev, qidx, desc_idx, 3)) {
+	ERROR("Failed to allocate descriptor chain\n");
+	return -1;
+    }
+
+    //    DEBUG("allocated chain %hu -> %hu -> %hu\n",desc_idx[0],desc_idx[1],desc_idx[2]);
+
+    struct virtq_desc *desc[3] = {&dev->virtq[qidx].vq.desc[desc_idx[0]],
+				  &dev->virtq[qidx].vq.desc[desc_idx[1]],
+				  &dev->virtq[qidx].vq.desc[desc_idx[2]] };
+
+    desc[0]->addr = (le64) req;
+    desc[0]->len = reqlen;
+    desc[0]->flags |= 0;
+    desc[0]->next = desc_idx[1];
+
+    desc[1]->addr = (le64) more;
+    desc[1]->len = morelen;
+    desc[1]->flags |= 0;
+    desc[1]->next = desc_idx[2];
+
+    desc[2]->addr = (le64) resp;
+    desc[2]->len = resplen;
+    desc[2]->flags |= VIRTQ_DESC_F_WRITE;
+    desc[2]->next = 0;
+
+    return transact_base(dev,qidx,desc_idx[0]);
+}
+
+// resource id "0" means "disabled" or "none"
+#define MY_RID 42 
 
 int virtio_gpu_init(struct virtio_pci_dev *dev)
 {
@@ -645,299 +802,306 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     // for (i = 0; i < qsz; i++) {
     //   DEBUG("Next pointer of descriptor %d is %d\n", i, vq->desc[i].next);
     // }
-    struct virtio_pci_virtq *virtq = &dev->virtq[0];
-    struct virtq *vq = &virtq->vq;
 
-    struct virtio_gpu_ctrl_hdr request;
-    memset(&request, 0, sizeof(request));
-
-    request.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
-
-    struct virtio_gpu_resp_display_info disp_info;
-
-    //fill hdr and buf for virtq descriptor
-    struct virtq_desc *hdr_desc = &vq->desc[0];
-
-    hdr_desc->addr = (uint64_t) &request;
-    hdr_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
-    hdr_desc->flags = 0;
-    hdr_desc->next = 1;
-    hdr_desc->flags |= VIRTQ_DESC_F_NEXT;
-
-    struct virtq_desc *buf_desc = &vq->desc[1];
-
-    buf_desc->addr = (uint64_t) &disp_info;
-    buf_desc->len = sizeof(struct virtio_gpu_resp_display_info);
-    buf_desc->flags |= VIRTQ_DESC_F_WRITE;
-    buf_desc->next = 0;
-
-    le16 usedidx = virtq->vq.used->idx;
-
-    DEBUG("Virtq used index: %d\n",  usedidx);
-
-    DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-    DEBUG("vq->used->idx: %d\n", vq->used->idx);
-
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 0;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier(); 
-
-    dev->common->queue_select = 0;
-    virtio_pci_atomic_store(&dev->common->queue_enable, 1);
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
-
-    // print avail queue index
-    // registers may not be set up correctly
-
-    DEBUG("request initiated\n");
-    do {
-      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-      DEBUG("vq->used->idx: %d\n", vq->used->idx);
-
-      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
-    } while(!usedidx);
-
-    DEBUG("Virtq used index: %d\n", virtq->vq.used->idx);
+    struct virtio_gpu_ctrl_hdr disp_info_req;
+    struct virtio_gpu_resp_display_info disp_info;  // not noted as resp since used elsewhere
+    ZERO(&disp_info_req);
+    ZERO(&disp_info);
+    
+    disp_info_req.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+    
+    
+    if (transact_rw(dev,
+		    0,
+		    &disp_info_req,
+		    sizeof(disp_info_req),
+		    &disp_info,
+		    sizeof(disp_info))) {
+	ERROR("Failed to get display info\n");
+	return -1;
+    }
+	
+    DEBUG("display info complete: rc=%x\n",disp_info.hdr.type);
 
     DEBUG("Display Info code: %x\n", disp_info.hdr.type);
-
+    
     for (int jj = 0; jj < 16; jj++) {
-        DEBUG("Screen %u has info: %u, %u, %ux%u, %u, %u\n", jj, disp_info.pmodes[jj].r.x, disp_info.pmodes[jj].r.y, disp_info.pmodes[jj].r.width, disp_info.pmodes[jj].r.height, disp_info.pmodes[jj].flags, disp_info.pmodes[jj].enabled);
+	if (disp_info.pmodes[jj].enabled) { 
+	    DEBUG("scanout (monitor) %u has info: %u, %u, %ux%u, %u, %u\n", jj, disp_info.pmodes[jj].r.x, disp_info.pmodes[jj].r.y, disp_info.pmodes[jj].r.width, disp_info.pmodes[jj].r.height, disp_info.pmodes[jj].flags, disp_info.pmodes[jj].enabled);
+	}
     }
+
+    
+    struct virtio_gpu_resource_create_2d create_2d_req;
+    struct virtio_gpu_ctrl_hdr create_2d_resp;
+
+    ZERO(&create_2d_req);
+    ZERO(&create_2d_resp);
+    
+    create_2d_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+    create_2d_req.width = disp_info.pmodes[0].r.width;
+    create_2d_req.height = disp_info.pmodes[0].r.height;
+    create_2d_req.format = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+    create_2d_req.resource_id = MY_RID;
+
+    DEBUG("create 2d %u x %u @ %d id=%u\n",create_2d_req.width,create_2d_req.height,create_2d_req.format,create_2d_req.resource_id);
+    
+    if (transact_rw(dev,
+		    0,
+		    &create_2d_req,
+		    sizeof(create_2d_req),
+		    &create_2d_resp,
+		    sizeof(create_2d_resp))) {
+	ERROR("Failed to create 2d resource\n");
+	return -1;
+    }
+
+    DEBUG("create 2d resource complete - rc=%x\n",create_2d_resp.type);
 
     // create local framebuffer
     uint64_t fb_length = disp_info.pmodes[0].r.width * disp_info.pmodes[0].r.height * 4;
     uint32_t *framebuffer = malloc(fb_length);
 
-    // createw appropriate headers
+    if (!framebuffer) {
+	ERROR("failed to allocate framebuffer of length %lu\n",fb_length);
+    } else {
+	DEBUG("allocated framebuffer of length %lu\n",fb_length);
+    }
 
-    struct virtio_gpu_ctrl_hdr create_2d;
-    create_2d.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+    DEBUG("framebuffer allocated\n");
 
-    struct virtio_gpu_resource_create_2d create_data;
-
-    create_data.width = disp_info.pmodes[0].r.width;
-    create_data.height = disp_info.pmodes[0].r.height;
-    create_data.format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
-    create_data.resource_id = 0;
-
-    //fill hdr and buf for virtq descriptor
-    struct virtq_desc *hdr_desc_data = &vq->desc[2];
-
-    hdr_desc->addr = (uint64_t) &create_2d;
-    hdr_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
-    hdr_desc->flags = 0;
-    hdr_desc->next = 3;
-    hdr_desc->flags |= VIRTQ_DESC_F_NEXT;
-
-    struct virtq_desc *data_desc = &vq->desc[3];
-
-    data_desc->addr = (uint64_t) &create_data;
-    data_desc->len = sizeof(struct virtio_gpu_resource_create_2d);
-    data_desc->flags |= VIRTQ_DESC_F_WRITE;
-    data_desc->next = NULL;
-
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 2;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier(); 
-
-    dev->common->queue_select = 0;
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
-
-    // print avail queue index
-    // registers may not be set up correctly
-
-    DEBUG("request initiated\n");
-    do {
-      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-      DEBUG("vq->used->idx: %d\n", vq->used->idx);
-
-      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
-    } while(usedidx != 2);
-
-    DEBUG("Virtq used index: %d\n", virtq->vq.used->idx);
-
-    DEBUG("Create 2D: %x\n", create_data.hdr.type);
-
-    struct virtio_gpu_ctrl_hdr backing_hdr;
-    backing_hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
-
-    struct virtio_gpu_resource_attach_backing backing_data;
-    backing_data.resource_id = 0;
-    backing_data.nr_entries = 1;
-
-    struct virtio_gpu_mem_entry entry;
-    entry.addr = (uint64_t) framebuffer;
-    entry.length = fb_length;
-
-    //fill hdr and buf for virtq descriptor
-    struct virtq_desc *hdr_desc_backing = &vq->desc[4];
-
-    hdr_desc_backing->addr = (uint64_t) &backing_hdr;
-    hdr_desc_backing->len = sizeof(struct virtio_gpu_ctrl_hdr);
-    hdr_desc_backing->flags = 0;
-    hdr_desc_backing->next = 5;
-    hdr_desc_backing->flags |= VIRTQ_DESC_F_NEXT;
-
-    struct virtq_desc *backing_data_desc = &vq->desc[5];
-
-    backing_data_desc->addr = (uint64_t) &backing_data;
-    backing_data_desc->len = sizeof(struct virtio_gpu_resource_attach_backing);
-    backing_data_desc->flags |= VIRTQ_DESC_F_WRITE;
-    backing_data_desc->next = 6;
-
-    struct virtq_desc *entry_desc = &vq->desc[6];
-
-    entry_desc->addr = (uint64_t) &entry;
-    entry_desc->len = sizeof(struct virtio_gpu_mem_entry);
-    entry_desc->flags = 0;
-    entry_desc->next = NULL;
-
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 4;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier(); 
-
-    dev->common->queue_select = 0;
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
-
-    do {
-      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-      DEBUG("vq->used->idx: %d\n", vq->used->idx);
-
-      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
-    } while(usedidx != 3);
-
-
-    DEBUG("response:  %x\n", backing_data.hdr.type);
+    // fill framebuffer with a picture of memory starting at 0
+    uint32_t *start = 0;
+    for (int k=0;k<fb_length/4;k++) {
+	framebuffer[k]= start[k]; 
+    }
     
-    struct virtio_gpu_ctrl_hdr setso_hdr;
-    setso_hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    DEBUG("framebuffer filled\n");
+     
+    struct virtio_gpu_resource_attach_backing backing_req;
+    struct virtio_gpu_mem_entry backing_entry;
+    struct virtio_gpu_ctrl_hdr backing_resp;
 
-    struct virtio_gpu_set_scanout setso;
-    setso.r=disp_info.pmodes[0].r;
-    setso.resource_id=0;
-    setso.scanout_id=0;
+    ZERO(&backing_req);
+    ZERO(&backing_entry);
+    ZERO(&backing_resp);
+	
+    backing_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+
+    backing_req.resource_id = MY_RID;
+    backing_req.nr_entries = 1;
+
+    backing_entry.addr = (uint64_t) framebuffer;
+    backing_entry.length = fb_length;
+
+    if (transact_rrw(dev,
+		     0,
+		     &backing_req,
+		     sizeof(backing_req),
+		     &backing_entry,
+		     sizeof(backing_entry),
+		     &backing_resp,
+		     sizeof(backing_resp))) {
+	ERROR("Failed to attach backing\n");
+	return -1;
+    }
+
+    DEBUG("attach backing complete - rc=%x\n",backing_resp.type);
+
+    struct virtio_gpu_set_scanout setso_req;
+    struct virtio_gpu_ctrl_hdr setso_resp;
+
+    ZERO(&setso_req);
+    ZERO(&setso_resp);
     
-    struct virtq_desc *setso_cmd_desc = &vq->desc[7];
-
-    setso_cmd_desc->addr = (uint64_t) &setso_hdr;
-    setso_cmd_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
-    setso_cmd_desc->flags = VIRTQ_DESC_F_NEXT;
-    setso_cmd_desc->next = 8;
+    setso_req.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    setso_req.r=disp_info.pmodes[0].r;
+    setso_req.resource_id=MY_RID;
+    setso_req.scanout_id=0;
     
-    struct virtq_desc *setso_desc = &vq->desc[8];
+    if (transact_rw(dev,
+		    0,
+		    &setso_req,
+		    sizeof(setso_req),
+		    &setso_resp,
+		    sizeof(setso_resp))) {
+	ERROR("Failed to set scanout\n");
+	return -1;
+    }
 
-    setso_desc->addr = (uint64_t) &setso;
-    setso_desc->len = sizeof(struct virtio_gpu_set_scanout);
-    setso_desc->flags |= VIRTQ_DESC_F_WRITE;
-    setso_desc->next = NULL;
-
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 7;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier(); 
-
-    dev->common->queue_select = 0;
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
-
-    do {
-      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-      DEBUG("vq->used->idx: %d\n", vq->used->idx);
-
-      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
-    } while(usedidx != 4);
-
-    DEBUG("response:  %x\n", setso.hdr.type);
-
-    struct virtio_gpu_ctrl_hdr xfer_hdr;
-    xfer_hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-
-    struct virtio_gpu_transfer_to_host_2d xfer;
-    xfer.r=disp_info.pmodes[0].r;
-    xfer.offset = 0;
-    xfer.resource_id=0;
+    DEBUG("set scanout complete - rc=%x\n",setso_resp.type);
     
-    struct virtq_desc *xfer_cmd_desc = &vq->desc[9];
+    struct virtio_gpu_transfer_to_host_2d xfer_req;
+    struct virtio_gpu_ctrl_hdr xfer_resp;
 
-    xfer_cmd_desc->addr = (uint64_t) &xfer_hdr;
-    xfer_cmd_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
-    xfer_cmd_desc->flags = VIRTQ_DESC_F_NEXT;
-    xfer_cmd_desc->next = 10;
+    ZERO(&xfer_req);
+    ZERO(&xfer_resp);
     
-    struct virtq_desc *xfer_desc = &vq->desc[10];
+    xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
 
-    xfer_desc->addr = (uint64_t) &xfer;
-    xfer_desc->len = sizeof(struct virtio_gpu_transfer_to_host_2d);
-    xfer_desc->flags |= VIRTQ_DESC_F_WRITE;
-    xfer_desc->next = NULL;
+    xfer_req.r=disp_info.pmodes[0].r;
+    xfer_req.offset = 0;
+    xfer_req.resource_id=MY_RID;
 
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 9;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier(); 
+    if (transact_rw(dev,
+		    0,
+		    &xfer_req,
+		    sizeof(xfer_req),
+		    &xfer_resp,
+		    sizeof(xfer_resp))) {
+	ERROR("Failed to transfer to host\n");
+	return -1;
+    }
 
-    dev->common->queue_select = 0;
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+    DEBUG("xfer complete - rc=%x\n",xfer_resp.type);
 
-    do {
-      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-      DEBUG("vq->used->idx: %d\n", vq->used->idx);
+    struct virtio_gpu_resource_flush flush_req;
+    struct virtio_gpu_ctrl_hdr flush_resp;
 
-      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
-    } while(usedidx != 5);
-
-    DEBUG("response:  %x\n", xfer.hdr.type);
-
-    struct virtio_gpu_ctrl_hdr flush_hdr;
-    flush_hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-
-    struct virtio_gpu_resource_flush flush;
-    flush.r=disp_info.pmodes[0].r;
-    flush.resource_id=0;
+    ZERO(&flush_req);
+    ZERO(&flush_resp);
     
-    struct virtq_desc *flush_cmd_desc = &vq->desc[11];
-
-    flush_cmd_desc->addr = (uint64_t) &flush_hdr;
-    flush_cmd_desc->len = sizeof(struct virtio_gpu_ctrl_hdr);
-    flush_cmd_desc->flags = VIRTQ_DESC_F_NEXT;
-    flush_cmd_desc->next = 12;
+    flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+	
+    flush_req.r=disp_info.pmodes[0].r;
+    flush_req.resource_id=MY_RID;
     
-    struct virtq_desc *flush_desc = &vq->desc[12];
-
-    flush_desc->addr = (uint64_t) &flush;
-    flush_desc->len = sizeof(struct virtio_gpu_resource_flush);
-    flush_desc->flags |= VIRTQ_DESC_F_WRITE;
-    flush_desc->next = NULL;
-
-    vq->avail->ring[vq->avail->idx % vq->qsz] = 11;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier(); 
-
-    dev->common->queue_select = 0;
-    DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
-
-    do {
-      DEBUG("vq->avail->idx: %d\n", vq->avail->idx);
-      DEBUG("vq->used->idx: %d\n", vq->used->idx);
-
-      usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
-    } while(usedidx != 6);
-
-    DEBUG("response:  %x\n", flush.hdr.type);
-
-    while(1);
+    if (transact_rw(dev,
+		    0,
+		    &flush_req,
+		    sizeof(flush_req),
+		    &flush_resp,
+		    sizeof(flush_resp))) {
+	ERROR("Failed to flush\n");
+	return -1;
+    }
     
+    DEBUG("flush complete - rc=%x\n",flush_resp.type);
+
+    // we'll walk through first 32 MB
+    while(start<(uint32_t*)0x2000000) {
+	// Make window slide through memory
+	for (int k=0;k<fb_length/4;k++) {
+	    framebuffer[k] = start[k];
+	}
+	start += disp_info.pmodes[0].r.width*8;
+
+	ZERO(&xfer_req);
+	ZERO(&xfer_resp);
+	
+	xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+	
+	xfer_req.r=disp_info.pmodes[0].r;
+	xfer_req.offset = 0;
+	xfer_req.resource_id=MY_RID;
+	
+	if (transact_rw(dev,
+			0,
+			&xfer_req,
+			sizeof(xfer_req),
+			&xfer_resp,
+			sizeof(xfer_resp))) {
+	    ERROR("Failed to transfer to host\n");
+	    return -1;
+	}
+	
+	ZERO(&flush_req);
+	ZERO(&flush_resp);
+	
+	flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+	
+	flush_req.r=disp_info.pmodes[0].r;
+	flush_req.resource_id=MY_RID;
+	
+	if (transact_rw(dev,
+			0,
+			&flush_req,
+			sizeof(flush_req),
+			&flush_resp,
+			sizeof(flush_resp))) {
+	    ERROR("Failed to flush\n");
+	    return -1;
+	}
+
+    }
+
+    DEBUG("Now attempting to switch back to VGA mode\n");
+ 
+    struct virtio_gpu_resource_detach_backing detach_req;
+    struct virtio_gpu_ctrl_hdr detach_resp;
+
+    ZERO(&detach_req);
+    ZERO(&detach_resp);
+	
+    detach_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
+    detach_req.resource_id=MY_RID;
+
+
+    if (transact_rw(dev,
+		    0,
+		    &detach_req,
+		    sizeof(detach_req),
+		    &detach_resp,
+		    sizeof(detach_resp))) {
+	ERROR("Failed to detach backing\n");
+	return -1;
+    }
+
+    DEBUG("detach complete - rc=%x\n",detach_resp.type);
+
+
+    ZERO(&setso_req);
+    ZERO(&setso_resp);
+    
+    setso_req.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    setso_req.r=disp_info.pmodes[0].r;
+    setso_req.resource_id=0;  // disable
+    setso_req.scanout_id=0;
+    
+    if (transact_rw(dev,
+		    0,
+		    &setso_req,
+		    sizeof(setso_req),
+		    &setso_resp,
+		    sizeof(setso_resp))) {
+	ERROR("Failed to reset scanout\n");
+	return -1;
+    }
+
+    DEBUG("reset scanout complete - rc=%x\n",setso_resp.type);
+
+    
+    struct virtio_gpu_resource_unref unref_req;
+    struct virtio_gpu_ctrl_hdr unref_resp;
+
+    ZERO(&unref_req);
+    ZERO(&unref_resp);
+	
+    unref_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    unref_req.resource_id=MY_RID;
+
+    if (transact_rw(dev,
+		    0,
+		    &unref_req,
+		    sizeof(unref_req),
+		    &unref_resp,
+		    sizeof(unref_resp))) {
+	ERROR("Failed to unref our resource\n");
+	return -1;
+    }
+
+    DEBUG("unref complete - rc=%x\n",unref_resp.type);
+
+    DEBUG("Reseting device\n");
+
+    // now reset the device to get us back into VGA compatibility
+    virtio_pci_atomic_store(&dev->common->device_status,0);
+
+    DEBUG("Freeing framebuffer\n");
+
+    free(framebuffer);
+
+    DEBUG("Done\n");
 
     return 0;
 }
