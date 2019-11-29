@@ -1092,14 +1092,21 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
 
     DEBUG("unref complete - rc=%x\n",unref_resp.type);
 
-    DEBUG("Reseting device\n");
-
-    // now reset the device to get us back into VGA compatibility
-    virtio_pci_atomic_store(&dev->common->device_status,0);
-
     DEBUG("Freeing framebuffer\n");
 
     free(framebuffer);
+
+    // disable this on a functional qemu
+#if 1
+    DEBUG("Skipping reset to VGA mode, which will only work on a non-buggy QEMU (4.1.1)\n");
+    return 0;
+#endif
+    
+    DEBUG("Reseting device\n");
+    
+    // now reset the device to get us back into VGA compatibility
+    virtio_pci_atomic_store(&dev->common->device_status,0);
+
 
     DEBUG("Done\n");
 

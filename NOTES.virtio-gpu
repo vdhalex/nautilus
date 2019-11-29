@@ -1,0 +1,90 @@
+11/29 rewrites - PAD
+
+We are now functional on both the default qemu on Ubuntu 16, and the
+current qemu source release using basic SDL and presumably the other
+backends
+
+This now does a bit of a show at boot time
+
+Comments
+
+Note the protocol used is READ request, WRITE response or READ
+request, READ additional, WRITE response.  One of the bugs in the
+previous version was confused about about this process with
+the 
+
+Another issue is that resource id 0 means "none".  Use a non-zero
+resource id.
+
+Another issue is that QEMU 2.5 (default with Ubuntu 16) is flaky with
+respect to switching between VGA compat and virtio-mode, or even running
+multiple displays.   QEMU 4.1.1 is much better.
+
+example run commands:
+
+run-ok - simple -vga virtio, works for switch VGA->virtio->VGA on
+          4.1.1 (see comment in virtio_gpu.c), and works for switch
+          VGA->virtio on 2.5 (switch back fails)
+
+
+run-ok-virtio-vga - add both a std vga card (for text) and a pure
+                    virtio card for (graphics).  Switch between text
+                    and graphics (ctrl-alt-1 => text, ctrl-alt-2 =>
+                    graphics)
+
+Notes on installing current QEMU from source with support
+for assorted graphical backends:
+
+ 2137  wget https://download.qemu.org/qemu-4.1.1.tar.xz
+ 2138  tar xvfz qemu-4.1.1.tar.xz 
+ 2139  tar xvf qemu-4.1.1.tar.xz 
+ 2140  cd qemu-4.1.1/
+ 2141  ./configure --help
+ 2142  mkdir /home/pdinda/cs343/tools
+ 2143  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2144  sudo apt install gtk3-devel
+ 2145  sudo apt install gtk-devel
+ 2146  sudo apt search gtk
+ 2147  sudo apt install libgtk3-devel
+ 2148  sudo apt install libgtk3
+ 2149  sudo apt search gtk | less
+ 2150  sudo apt search gtk | grep devel
+ 2151  sudo apt install gtk+3 | 
+ 2152  sudo apt install gtk+3 
+ 2153  sudo apt install gtk+3  | more
+ 2154  sudo apt search gtk3 | less
+ 2155  sudo apt-get install libgtk-3-dev
+ 2156  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2157* apt search vte3
+ 2158  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2159  apt search libvte
+ 2160  apt search libvte-2.91-dev
+ 2161  sudo apt install libvte-2.91-dev
+ 2162  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2163  apt search libsdl
+ 2164  sudo apt install libsdl2-dev
+ 2165  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2166  sudo apt install libncurses-dev
+ 2167  apt install libncurses-dev
+ 2168  sudo apt install libncurses-dev
+ 2169  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2170  sudo apt install libncurses-dev
+ 2171  sudo apt autoremove
+ 2172  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-curses --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2173  ./configure --help | grep with
+ 2174  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2175  sudo apt-search spice-server
+ 2176  sudo apt search spice-server
+ 2177  sudo apt install libspce-server-dev
+ 2178  sudo apt install libspice-server-dev
+ 2179  ./configure --prefix=/home/pdinda/cs343/tools --enable-system --enable-sdl --enable-gtk --enable-vte --enable-vnc --enable-kvm --enable-spice --enable-tools
+ 2180  make -j 8
+ 2181  make install
+ 2182  pwd
+ 2183  cd ..
+ 2184  ls
+ 2185  cd labs/
+ 2186  ls
+ 2187  cd virtio-gpu/
+ 2188  history > history-installs-qemu-etc.log
+
