@@ -577,7 +577,13 @@ static int transact_base(struct virtio_pci_dev *dev,
     //dump_descriptors(vq,0,8);
 
     //DEBUG("starting transaction on index %hu\n",didx);
-    // fix to user the relevant notify addr 
+    // fix to user the relevant notify addr
+    // compute notify addr given the qidx
+
+    // cap.offset + queue_notify_off * notify_off_multiplier
+    //
+    // dev->notify_base_addr + qidx * dev->notify_off_multiplier
+    
     virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
 
     //DEBUG("request initiated\n");
