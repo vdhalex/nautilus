@@ -583,6 +583,14 @@ static int transact_base(struct virtio_pci_dev *dev,
     // cap.offset + queue_notify_off * notify_off_multiplier
     //
     // dev->notify_base_addr + qidx * dev->notify_off_multiplier
+    // 
+    // probably not
+    // probably should:
+    //
+    // do queue select, then read queue_notify_offset, then
+    // multiply by notify_off_multplier, then add to notify_base_addr
+    //
+    
     
     virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
 
