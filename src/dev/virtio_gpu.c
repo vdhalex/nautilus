@@ -229,6 +229,24 @@ struct virtio_gpu_resource_flush {
         le32 padding; 
 };
 
+// CURSOR STRUCTS
+
+struct virtio_gpu_cursor_pos { 
+        le32 scanout_id; 
+        le32 x; 
+        le32 y; 
+        le32 padding; 
+};
+
+struct virtio_gpu_update_cursor { 
+        struct virtio_gpu_ctrl_hdr hdr; 
+        struct virtio_gpu_cursor_pos pos; 
+        le32 resource_id; 
+        le32 hot_x; 
+        le32 hot_y; 
+        le32 padding; 
+};
+
 /************************************************************
  ****************** gpu ops for kernel ********************
  ************************************************************/
@@ -662,146 +680,7 @@ static int transact_rrw(struct virtio_pci_dev *dev,
 // resource id "0" means "disabled" or "none"
 #define MY_RID 42 
 
-int virtio_gpu_init(struct virtio_pci_dev *dev)
-{
-    char buf[DEV_NAME_LEN];
-    
-    DEBUG("initialize device\n");
-    
-    // initialize block device
-    struct virtio_gpu_dev *d = malloc(sizeof(*d));
-    if (!d) {
-	ERROR("cannot allocate state\n");
-	return -1;
-    }
-    memset(d,0,sizeof(*d));
-    
-    // acknowledge device
-    if (virtio_pci_ack_device(dev)) {
-        ERROR("Could not acknowledge device\n");
-        free(d);
-        return -1;
-    }
-
-    // read device feature bits
-    if (virtio_pci_read_features(dev)) {
-        ERROR("Unable to read device features\n");
-        free(d);
-        return -1;
-    }
-
-    // accept feature bits
-    if (virtio_pci_write_features(dev, select_features(dev->feat_offered))) {
-        ERROR("Unable to write device features\n");
-        free(d);
-        return -1;
-    }
-    
-    // initilize device virtqueue
-    if (virtio_pci_virtqueue_init(dev)) {
-	ERROR("failed to initialize virtqueues\n");
-	free(d);
-	return -1;
-    }
-    
-    dev->state = d;
-    dev->teardown = teardown;
-    d->virtio_dev = dev;
-    
-    //parse_config(d);
-    
-    // register virtio gpu device, currently just as a generic device
-    snprintf(buf,DEV_NAME_LEN,"virtio-gpu%u",__sync_fetch_and_add(&num_devs,1));
-    d->gpu_dev = nk_dev_register(buf,NK_DEV_GENERIC,0,&ops,d);			       
-    
-    if (!d->gpu_dev) {
-	ERROR("failed to register block device\n");
-	virtio_pci_virtqueue_deinit(dev);
-	free(d);
-	return -1;
-    }
-    
-    // We assume that interrupt allocations will not fail...
-    // if we do fail, the rest of this code will leak
-    
-    struct pci_dev *p = dev->pci_dev;
-    uint8_t i;
-    ulong_t vec;
-    
-    if (dev->itype==VIRTIO_PCI_MSI_X_INTERRUPT) {
-	// we assume MSI-X has been enabled on the device
-	// already, that virtqueue setup is done, and
-	// that queue i has been mapped to MSI-X table entry i
-	// MSI-X is on but whole function is masked
-
-	DEBUG("setting up interrupts via MSI-X\n");
-	
-	if (dev->num_virtqs != p->msix.size) {
-	    ERROR("weird mismatch: numqueues=%u msixsize=%u\n", dev->num_virtqs, p->msix.size);
-	    // continue for now...
-	    // return -1;
-	}
-	
-	// this should really go by virtqueue, not entry
-	// and ideally pulled into a per-queue setup routine
-	// in virtio_pci...
-	uint16_t num_vec = p->msix.size;
-        
-	// now fill out the device's MSI-X table
-	for (i=0;i<num_vec;i++) {
-	    // find a free vector
-	    // note that prioritization here is your problem
-	    if (idt_find_and_reserve_range(1,0,&vec)) {
-		ERROR("cannot get vector...\n");
-		return -1;
-	    }
-	    // register your handler for that vector
-	    if (register_int_handler(vec, handler, d)) {
-		ERROR("failed to register int handler\n");
-		return -1;
-		// failed....
-	    }
-	    // set the table entry to point to your handler
-	    if (pci_dev_set_msi_x_entry(p,i,vec,0)) {
-		ERROR("failed to set MSI-X entry\n");
-		return -1;
-	    }
-	    // and unmask it (device is still masked)
-	    if (pci_dev_unmask_msi_x_entry(p,i)) {
-		ERROR("failed to unmask entry\n");
-		return -1;
-	    }
-	    DEBUG("finished setting up entry %d for vector %u on cpu 0\n",i,vec);
-	}
-	
-	// unmask entire function
-	if (pci_dev_unmask_msi_x_all(p)) {
-	    ERROR("failed to unmask device\n");
-	    return -1;
-	}
-	
-    } else {
-
-	ERROR("This device must operate with MSI-X\n");
-	return -1;
-    }
-    
-    DEBUG("device inited\n");
-    
-    /*************************************************
-     ********************* TEST **********************
-     *************************************************/
-    // DEBUG("******* Running read_blocks or write_blocks *******\n");
-    // test_read(d);
-    // test_write(d);
-    
-    // DEBUG("******* Running descriptor chain test *******\n");
-    // struct virtio_pci_virtq *virtq = &dev->virtq[0];
-    // struct virtq *vq = &virtq->vq;
-    // uint64_t qsz = vq->num;
-    // for (i = 0; i < qsz; i++) {
-    //   DEBUG("Next pointer of descriptor %d is %d\n", i, vq->desc[i].next);
-    // }
+static int test_gpu(struct virtio_pci_dev *dev) {
 
     struct virtio_gpu_ctrl_hdr disp_info_req;
     struct virtio_gpu_resp_display_info disp_info;  // not noted as resp since used elsewhere
@@ -809,7 +688,6 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     ZERO(&disp_info);
     
     disp_info_req.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
-    
     
     if (transact_rw(dev,
 		    0,
@@ -1095,6 +973,457 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     DEBUG("Freeing framebuffer\n");
 
     free(framebuffer);
+}
+
+static int run_graphics_mode(struct virtio_pci_dev *dev) {
+    struct virtio_gpu_ctrl_hdr disp_info_req;
+    struct virtio_gpu_resp_display_info disp_info;  // not noted as resp since used elsewhere
+    ZERO(&disp_info_req);
+    ZERO(&disp_info);
+    
+    disp_info_req.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+    
+    if (transact_rw(dev,
+		    0,
+		    &disp_info_req,
+		    sizeof(disp_info_req),
+		    &disp_info,
+		    sizeof(disp_info))) {
+	ERROR("Failed to get display info\n");
+	return -1;
+    }
+	
+    DEBUG("display info complete: rc=%x\n",disp_info.hdr.type);
+
+    DEBUG("Display Info code: %x\n", disp_info.hdr.type);
+
+    struct virtio_gpu_resource_create_2d create_2d_req;
+    struct virtio_gpu_ctrl_hdr create_2d_resp;
+
+    ZERO(&create_2d_req);
+    ZERO(&create_2d_resp);
+    
+    create_2d_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+    create_2d_req.width = disp_info.pmodes[0].r.width;
+    create_2d_req.height = disp_info.pmodes[0].r.height;
+    create_2d_req.format = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+    create_2d_req.resource_id = MY_RID;
+
+    DEBUG("create 2d %u x %u @ %d id=%u\n",create_2d_req.width,create_2d_req.height,create_2d_req.format,create_2d_req.resource_id);
+    
+    if (transact_rw(dev,
+		    0,
+		    &create_2d_req,
+		    sizeof(create_2d_req),
+		    &create_2d_resp,
+		    sizeof(create_2d_resp))) {
+	ERROR("Failed to create 2d resource\n");
+	return -1;
+    }
+
+    DEBUG("create 2d resource complete - rc=%x\n",create_2d_resp.type);
+
+    // create local framebuffer
+    uint64_t fb_length = disp_info.pmodes[0].r.width * disp_info.pmodes[0].r.height * 4;
+    uint32_t *framebuffer = malloc(fb_length);
+
+    if (!framebuffer) {
+	ERROR("failed to allocate framebuffer of length %lu\n",fb_length);
+    } else {
+	DEBUG("allocated framebuffer of length %lu\n",fb_length);
+    }
+
+    DEBUG("framebuffer allocated\n");
+
+    // fill framebuffer with a picture of memory starting at 0
+    // uint32_t *start = 0;
+    // for (int k=0;k<fb_length/4;k++) {
+	// framebuffer[k]= start[k]; 
+    // }
+    
+    DEBUG("framebuffer filled\n");
+     
+    struct virtio_gpu_resource_attach_backing backing_req;
+    struct virtio_gpu_mem_entry backing_entry;
+    struct virtio_gpu_ctrl_hdr backing_resp;
+
+    ZERO(&backing_req);
+    ZERO(&backing_entry);
+    ZERO(&backing_resp);
+	
+    backing_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+
+    backing_req.resource_id = MY_RID;
+    backing_req.nr_entries = 1;
+
+    backing_entry.addr = (uint64_t) framebuffer;
+    backing_entry.length = fb_length;
+
+    if (transact_rrw(dev,
+		     0,
+		     &backing_req,
+		     sizeof(backing_req),
+		     &backing_entry,
+		     sizeof(backing_entry),
+		     &backing_resp,
+		     sizeof(backing_resp))) {
+	ERROR("Failed to attach backing\n");
+	return -1;
+    }
+
+    DEBUG("attach backing complete - rc=%x\n",backing_resp.type);
+
+    struct virtio_gpu_set_scanout setso_req;
+    struct virtio_gpu_ctrl_hdr setso_resp;
+
+    ZERO(&setso_req);
+    ZERO(&setso_resp);
+    
+    setso_req.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    setso_req.r=disp_info.pmodes[0].r;
+    setso_req.resource_id=MY_RID;
+    setso_req.scanout_id=0;
+    
+    if (transact_rw(dev,
+		    0,
+		    &setso_req,
+		    sizeof(setso_req),
+		    &setso_resp,
+		    sizeof(setso_resp))) {
+	ERROR("Failed to set scanout\n");
+	return -1;
+    }
+
+    DEBUG("set scanout complete - rc=%x\n",setso_resp.type);
+    
+    struct virtio_gpu_transfer_to_host_2d xfer_req;
+    struct virtio_gpu_ctrl_hdr xfer_resp;
+
+    ZERO(&xfer_req);
+    ZERO(&xfer_resp);
+    
+    xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+
+    xfer_req.r=disp_info.pmodes[0].r;
+    xfer_req.offset = 0;
+    xfer_req.resource_id=MY_RID;
+
+    if (transact_rw(dev,
+		    0,
+		    &xfer_req,
+		    sizeof(xfer_req),
+		    &xfer_resp,
+		    sizeof(xfer_resp))) {
+	ERROR("Failed to transfer to host\n");
+	return -1;
+    }
+
+    DEBUG("xfer complete - rc=%x\n",xfer_resp.type);
+
+    struct virtio_gpu_resource_flush flush_req;
+    struct virtio_gpu_ctrl_hdr flush_resp;
+
+    ZERO(&flush_req);
+    ZERO(&flush_resp);
+    
+    flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+	
+    flush_req.r=disp_info.pmodes[0].r;
+    flush_req.resource_id=MY_RID;
+    
+    if (transact_rw(dev,
+		    0,
+		    &flush_req,
+		    sizeof(flush_req),
+		    &flush_resp,
+		    sizeof(flush_resp))) {
+	ERROR("Failed to flush\n");
+	return -1;
+    }
+    
+    DEBUG("flush complete - rc=%x\n",flush_resp.type);
+
+    // NOW ATTEMPTING TO KEEP TRACK OF MOUSE
+    struct virtio_gpu_cursor_pos curr_pos;
+    struct virtio_gpu_ctrl_hdr update_cursor_req;
+    struct virtio_gpu_update_cursor cursor_resp;
+    ZERO(&curr_pos);
+    ZERO(&update_cursor_req);
+    ZERO(&cursor_resp);
+
+    int y = 384; // setting y to a default value for this test
+    
+    for (int x_i = 0; x_i < 1024; x_i++) {
+        // fill in new cursor information
+        update_cursor_req.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
+        curr_pos.x = x_i;
+        curr_pos.y = y;
+        curr_pos.scanout_id = 0;
+
+        cursor_resp.pos = curr_pos;
+        cursor_resp.resource_id = MY_RID;
+
+        if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &cursor_resp, sizeof(cursor_resp))) {
+            ERROR("Failed to update cursor at %u\n", x_i);
+            return -1;
+        }
+
+        ZERO(&xfer_req);
+        ZERO(&xfer_resp);
+        
+        xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+        
+        xfer_req.r=disp_info.pmodes[0].r;
+        xfer_req.offset = 0;
+        xfer_req.resource_id=MY_RID;
+        
+        if (transact_rw(dev,
+                0,
+                &xfer_req,
+                sizeof(xfer_req),
+                &xfer_resp,
+                sizeof(xfer_resp))) {
+            ERROR("Failed to transfer to host\n");
+            return -1;
+        }
+        
+        ZERO(&flush_req);
+        ZERO(&flush_resp);
+        
+        flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+        
+        flush_req.r=disp_info.pmodes[0].r;
+        flush_req.resource_id=MY_RID;
+        
+        if (transact_rw(dev,
+                0,
+                &flush_req,
+                sizeof(flush_req),
+                &flush_resp,
+                sizeof(flush_resp))) {
+            ERROR("Failed to flush\n");
+            return -1;
+        }
+    }
+
+    DEBUG("Now attempting to switch back to VGA mode\n");
+ 
+    struct virtio_gpu_resource_detach_backing detach_req;
+    struct virtio_gpu_ctrl_hdr detach_resp;
+
+    ZERO(&detach_req);
+    ZERO(&detach_resp);
+	
+    detach_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
+    detach_req.resource_id=MY_RID;
+
+
+    if (transact_rw(dev,
+		    0,
+		    &detach_req,
+		    sizeof(detach_req),
+		    &detach_resp,
+		    sizeof(detach_resp))) {
+	ERROR("Failed to detach backing\n");
+	return -1;
+    }
+
+    DEBUG("detach complete - rc=%x\n",detach_resp.type);
+
+
+    ZERO(&setso_req);
+    ZERO(&setso_resp);
+    
+    setso_req.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    setso_req.r=disp_info.pmodes[0].r;
+    setso_req.resource_id=0;  // disable
+    setso_req.scanout_id=0;
+    
+    if (transact_rw(dev,
+		    0,
+		    &setso_req,
+		    sizeof(setso_req),
+		    &setso_resp,
+		    sizeof(setso_resp))) {
+	ERROR("Failed to reset scanout\n");
+	return -1;
+    }
+
+    DEBUG("reset scanout complete - rc=%x\n",setso_resp.type);
+
+    
+    struct virtio_gpu_resource_unref unref_req;
+    struct virtio_gpu_ctrl_hdr unref_resp;
+
+    ZERO(&unref_req);
+    ZERO(&unref_resp);
+	
+    unref_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    unref_req.resource_id=MY_RID;
+
+    if (transact_rw(dev,
+		    0,
+		    &unref_req,
+		    sizeof(unref_req),
+		    &unref_resp,
+		    sizeof(unref_resp))) {
+	ERROR("Failed to unref our resource\n");
+	return -1;
+    }
+
+    DEBUG("unref complete - rc=%x\n",unref_resp.type);
+
+    DEBUG("Freeing framebuffer\n");
+
+    free(framebuffer);
+
+    return 0;
+}
+
+int virtio_gpu_init(struct virtio_pci_dev *dev)
+{
+    char buf[DEV_NAME_LEN];
+    
+    DEBUG("initialize device\n");
+    
+    // initialize block device
+    struct virtio_gpu_dev *d = malloc(sizeof(*d));
+    if (!d) {
+	ERROR("cannot allocate state\n");
+	return -1;
+    }
+    memset(d,0,sizeof(*d));
+    
+    // acknowledge device
+    if (virtio_pci_ack_device(dev)) {
+        ERROR("Could not acknowledge device\n");
+        free(d);
+        return -1;
+    }
+
+    // read device feature bits
+    if (virtio_pci_read_features(dev)) {
+        ERROR("Unable to read device features\n");
+        free(d);
+        return -1;
+    }
+
+    // accept feature bits
+    if (virtio_pci_write_features(dev, select_features(dev->feat_offered))) {
+        ERROR("Unable to write device features\n");
+        free(d);
+        return -1;
+    }
+    
+    // initilize device virtqueue
+    if (virtio_pci_virtqueue_init(dev)) {
+	ERROR("failed to initialize virtqueues\n");
+	free(d);
+	return -1;
+    }
+    
+    dev->state = d;
+    dev->teardown = teardown;
+    d->virtio_dev = dev;
+    
+    //parse_config(d);
+    
+    // register virtio gpu device, currently just as a generic device
+    snprintf(buf,DEV_NAME_LEN,"virtio-gpu%u",__sync_fetch_and_add(&num_devs,1));
+    d->gpu_dev = nk_dev_register(buf,NK_DEV_GENERIC,0,&ops,d);			       
+    
+    if (!d->gpu_dev) {
+	ERROR("failed to register block device\n");
+	virtio_pci_virtqueue_deinit(dev);
+	free(d);
+	return -1;
+    }
+    
+    // We assume that interrupt allocations will not fail...
+    // if we do fail, the rest of this code will leak
+    
+    struct pci_dev *p = dev->pci_dev;
+    uint8_t i;
+    ulong_t vec;
+    
+    if (dev->itype==VIRTIO_PCI_MSI_X_INTERRUPT) {
+	// we assume MSI-X has been enabled on the device
+	// already, that virtqueue setup is done, and
+	// that queue i has been mapped to MSI-X table entry i
+	// MSI-X is on but whole function is masked
+
+	DEBUG("setting up interrupts via MSI-X\n");
+	
+	if (dev->num_virtqs != p->msix.size) {
+	    ERROR("weird mismatch: numqueues=%u msixsize=%u\n", dev->num_virtqs, p->msix.size);
+	    // continue for now...
+	    // return -1;
+	}
+	
+	// this should really go by virtqueue, not entry
+	// and ideally pulled into a per-queue setup routine
+	// in virtio_pci...
+	uint16_t num_vec = p->msix.size;
+        
+	// now fill out the device's MSI-X table
+	for (i=0;i<num_vec;i++) {
+	    // find a free vector
+	    // note that prioritization here is your problem
+	    if (idt_find_and_reserve_range(1,0,&vec)) {
+		ERROR("cannot get vector...\n");
+		return -1;
+	    }
+	    // register your handler for that vector
+	    if (register_int_handler(vec, handler, d)) {
+		ERROR("failed to register int handler\n");
+		return -1;
+		// failed....
+	    }
+	    // set the table entry to point to your handler
+	    if (pci_dev_set_msi_x_entry(p,i,vec,0)) {
+		ERROR("failed to set MSI-X entry\n");
+		return -1;
+	    }
+	    // and unmask it (device is still masked)
+	    if (pci_dev_unmask_msi_x_entry(p,i)) {
+		ERROR("failed to unmask entry\n");
+		return -1;
+	    }
+	    DEBUG("finished setting up entry %d for vector %u on cpu 0\n",i,vec);
+	}
+	
+	// unmask entire function
+	if (pci_dev_unmask_msi_x_all(p)) {
+	    ERROR("failed to unmask device\n");
+	    return -1;
+	}
+	
+    } else {
+
+	ERROR("This device must operate with MSI-X\n");
+	return -1;
+    }
+    
+    DEBUG("device inited\n");
+    
+    /*************************************************
+     ********************* TEST **********************
+     *************************************************/
+    // DEBUG("******* Running read_blocks or write_blocks *******\n");
+    // test_read(d);
+    // test_write(d);
+    DEBUG("****** Running graphics mode ******\n");
+    if (run_graphics_mode(dev)) {
+        DEBUG("test gpu failed");
+    }
+    
+    // DEBUG("******* Running descriptor chain test *******\n");
+    // struct virtio_pci_virtq *virtq = &dev->virtq[0];
+    // struct virtq *vq = &virtq->vq;
+    // uint64_t qsz = vq->num;
+    // for (i = 0; i < qsz; i++) {
+    //   DEBUG("Next pointer of descriptor %d is %d\n", i, vq->desc[i].next);
+    // }
 
     // disable this on a functional qemu
 #if 1
