@@ -9,6 +9,8 @@ ifndef NAUT_CONFIG_XEON_PHI
 obj-y += serial.o
 endif
 
+obj-$(NAUT_CONFIG_PARPORT) += parport.o
+
 obj-$(NAUT_CONFIG_HPET) += hpet.o
 
 obj-$(NAUT_CONFIG_VIRTIO_PCI) += virtio_pci.o
