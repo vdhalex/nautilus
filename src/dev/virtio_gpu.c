@@ -592,9 +592,11 @@ static int transact_base(struct virtio_pci_dev *dev,
     //
     
     
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+    //virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
 
     //DEBUG("request initiated\n");
+
+    virtio_pci_virtqueue_notify(dev, qidx);
 
     do {
       usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
@@ -1168,6 +1170,9 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
     int y = 384; // setting y to a default value for this test
     
     for (int x_i = 0; x_i < 1024; x_i++) {
+
+
+
         // fill in new cursor information
         update_cursor_req.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
         curr_pos.x = x_i;
@@ -1176,6 +1181,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 
         cursor_resp.pos = curr_pos;
         cursor_resp.resource_id = MY_RID;
+
+	DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
 
         if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &cursor_resp, sizeof(cursor_resp))) {
             ERROR("Failed to update cursor at %u\n", x_i);
@@ -1190,6 +1197,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         xfer_req.r=disp_info.pmodes[0].r;
         xfer_req.offset = 0;
         xfer_req.resource_id=MY_RID;
+	
+	DEBUG("About to enter  VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D\n");
         
         if (transact_rw(dev,
                 0,

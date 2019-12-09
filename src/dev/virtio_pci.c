@@ -1017,6 +1017,39 @@ int virtio_pci_desc_chain_free(struct virtio_pci_dev *dev, uint16_t qidx, uint16
     return virtio_pci_desc_free_internal(dev,qidx,desc_idx,1);
 }
 
+
+
+
+int virtio_pci_virtqueue_notify(struct virtio_pci_dev *dev, uint16_t qidx) 
+{  
+    if (dev->model == VIRTIO_PCI_LEGACY_MODEL) {
+	ERROR("Attempted virtio_pci_virtqueue_notify on legacy model\n");
+	return -1;
+    } else if (dev->model == VIRTIO_PCI_MODERN_MODEL) {
+	virtio_pci_atomic_store(&dev->common->queue_select, qidx);
+	
+	uint64_t offset = virtio_pci_atomic_load(&dev->common->queue_notify_off);
+	uint64_t mult_offset = offset * dev->notify_off_multiplier;
+	uint32_t *addr = dev->notify_base_addr+mult_offset;
+
+
+
+	DEBUG("qidx = %lx\n", qidx);
+	DEBUG("mult_offset = %lx\n", mult_offset);
+	DEBUG("offset = %lx\n", offset);
+	DEBUG("addr = %lx\n", addr);
+
+	virtio_pci_atomic_store(addr, 0xFFFFFFFF);
+
+	return 0;
+    } else {
+	ERROR("Unknown model\n");
+	
+	return -1;
+    }
+}
+
+
 					 
 static int bringup_device(struct virtio_pci_dev *dev)
 {

@@ -180,6 +180,8 @@ int virtio_pci_desc_chain_alloc(struct virtio_pci_dev *dev, uint16_t qidx, uint1
 int virtio_pci_desc_free(struct virtio_pci_dev *dev, uint16_t qidx, uint16_t desc_idx);
 // free a chain descriptor starting with the given descriptor
 int virtio_pci_desc_chain_free(struct virtio_pci_dev *dev, uint16_t qidx, uint16_t desc_idx);
+// notify a device's virtqueue
+int virtio_pci_virtqueue_notify(struct virtio_pci_dev *dev, uint16_t qidx);
 
 /******************************************************************
       LEGACY/TRANSITIONAL INTERFACE TO DEVICE REGISTERS
