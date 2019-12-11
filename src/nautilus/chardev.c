@@ -229,7 +229,7 @@ static int handle_chartest (char * buf, void * priv)
 
     if (*rw == 'w') {
 	for (i=0;i<count;i++) {
-	    data[i] = "a\nb\ncdefghijklmnopqrstuvwxyz0123456789"[i%36];
+	    data[i] = "abcdefghijklmnopqrstuvwxyz0123456789"[i%36];
 	}
 
 	curpos=0;
