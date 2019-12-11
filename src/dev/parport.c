@@ -51,8 +51,8 @@
 #define DEBUG_PRINT(fmt, args...) 
 #endif
 
-#define ERROR(fmt, args...) ERROR_PRINT("parport: ERROR: " fmt, ##args)
-#define DEBUG(fmt, args...) DEBUG_PRINT("parport: DEBUG: " fmt, ##args)
+#define ERROR(fmt, args...) ERROR_PRINT("parport: " fmt, ##args)
+#define DEBUG(fmt, args...) DEBUG_PRINT("parport: " fmt, ##args)
 #define INFO(fmt, args...)  INFO_PRINT("parport: " fmt, ##args)
 
 
@@ -87,9 +87,9 @@ struct parport_state {
 //
 #define PARPORT0_BASE     0x378
 #define PARPORT0_IRQ      7
-#define DATA_PORT(base)   (base+0)     // read/write
-#define STAT_PORT(base)   (base+1)     // read-only
-#define CTRL_PORT(base)   (base+2)     // 
+#define DATA_PORT(s)   (s->base_port+0)     // read/write
+#define STAT_PORT(s)   (s->base_port+1)     // read-only
+#define CTRL_PORT(s)   (s->base_port+2)     // 
 
 
 ///////////////////////////////////////////////////////////////////
@@ -106,12 +106,12 @@ typedef union _stat_reg_t {
     uint8_t   val;
     struct {
 	uint_t res     :2;  // reserved
-	uint_t irq     :1;
-	uint_t err     :1;  // 0 => error (active low)
-	uint_t sel_in  :1;  // 1 => attached device online
-	uint_t pap_out :1;  // 1 => attached device out of paper
-	uint_t ack     :1;  // 0 => attached device acknowledges (active low)
-	uint_t busy    :1;  // 0 => attached device is busy (active low)
+	uint_t irq     :1;  // 0 => interrupt asserted (active low)
+	uint_t err     :1;  // attached device error line (active low)
+	uint_t sel     :1;  // attached device select line
+	uint_t pout    :1;  // attached device out of paper line
+	uint_t ack     :1;  // attached device ack line (active low)
+	uint_t busy    :1;  // attached device busy line (active low)
     } __attribute__((packed));
 } __attribute__((packed)) stat_reg_t;
 
@@ -120,17 +120,21 @@ typedef union _stat_reg_t {
 typedef union _ctrl_reg_t {
     uint8_t   val;
     struct {
-	uint_t strobe  :1;  // alert attached device to data
-	uint_t auto_lf :1;  // automatically add linefeeds to carriage returns
-	uint_t init    :1;  // 0 => reinit attached device (active low)
-	uint_t select  :1;  // 1 => select attached device
-	uint_t irq_en  :1;  // enable interrupt on completion
-	uint_t bidir   :1;  // 0 => output, 1 => input
+	uint_t strobe  :1;  // attached device strobe line - alert device to data (0->1->0)
+	uint_t autolf  :1;  // attached device autolf line - auomatically add linefeeds to carriage returns (if 1)
+	uint_t init    :1;  // attached device init line - init attached device (if 0)
+	uint_t select  :1;  // attached device select print/in 
+	uint_t irq_en  :1;  // enable interrupt when ack line is asserted by attached device
+	uint_t bidir_en:1;  // select transfer direction 0 => write to attached device
 	uint_t res     :2;  // reserved
     } __attribute__((packed));
 } __attribute__((packed)) ctrl_reg_t;
 
 
+
+///////////////////////////////////////////////////////////////////
+// Interface functions needed by the chardev abstraction
+//
 
 static int get_characteristics(void *state, struct nk_char_dev_characteristics *c)
 {
@@ -139,7 +143,7 @@ static int get_characteristics(void *state, struct nk_char_dev_characteristics *
 }
 
 
-
+// This function and the interrupt handler are where the action is
 static int read_write(void *state, uint8_t *data, int write)
 {
     struct parport_state *s = (struct parport_state *)state;
@@ -147,18 +151,13 @@ static int read_write(void *state, uint8_t *data, int write)
     ctrl_reg_t ctrl;
     stat_reg_t stat;
 
-    DEBUG("doing %s of %c\n",write ? "write" : "read", *data);
+    DEBUG("doing %s of data %c\n",write ? "write" : "read", *data);
 
-    outb(CTRL_PORT(s->base_port),0);
-    outb(DATA_PORT(s->base_port),*data);
-
-    return 1;
-    
     STATE_LOCK_CONF;
 
     // get exclusive control
     STATE_LOCK(s);
-
+    
     // if not ready, we are toast
     if (s->state!=READY) {
 	DEBUG("not ready\n");
@@ -166,50 +165,58 @@ static int read_write(void *state, uint8_t *data, int write)
 	goto out;
     }
 
-#if 0
-    // set the port to output
-    ctrl.val=0;
-    ctrl.irq_en = 1; // interrupt when done
-    ctrl.bidir =  write ? 0 : 1; // data flowing to attached device
-
-    DEBUG("writing config %02x\n",ctrl.val);
+    // The busy state will be reset by the interrupt handler
+    s->state = BUSY;
     
-    outb(CTRL_PORT(s->base_port),ctrl.val);
-#endif
+    DEBUG("waiting for attached device to become ready\n");
     
     // this should not wait long...
-    while ( !(inb(STAT_PORT(s->base_port)) & 0x80)) {
+    do {
 	io_delay();
-    }
+	stat.val = inb(STAT_PORT(s));
+    } while (!stat.busy); // busy is active low
 
-    DEBUG("ready to write data\n");
+    DEBUG("attached device ready\n");
     
     if (write) {
-	// actually output the data
-	DEBUG("port=%x\n",s->base_port);
-	outb(DATA_PORT(s->base_port),*data);
-	DEBUG("data written\n");
+	DEBUG("enabling output buffers to allow output\n");
+	// enable output drivers for writing
+	ctrl.val = inb(CTRL_PORT(s));
+	ctrl.bidir_en =  0; // active low to enable output
+	outb(ctrl.val,CTRL_PORT(s));
 
-	// now do the strobe
-	ctrl.val=inb(CTRL_PORT(s->base_port));
+	DEBUG("outputing actual data\n");
+	
+	// actually output the data
+	outb(*data,DATA_PORT(s));
+	
+	DEBUG("strobing attached device\n");
+	
+	// now do the strobe (0->1->0) to clock the
+	// data to the attached device
+	ctrl.val=inb(CTRL_PORT(s));
 	ctrl.strobe = 1;
-	outb(CTRL_PORT(s->base_port),ctrl.val);
+	outb(ctrl.val,CTRL_PORT(s));
 	io_delay();
 	ctrl.strobe = 0;
-	outb(CTRL_PORT(s->base_port),ctrl.val);
-	//s->state = BUSY;
-	DEBUG("strobe complete\n");
-	// this should not wait long...
-	while ( !(inb(STAT_PORT(s->base_port)) & 0x80)) {
-	    io_delay();
-	}
-	DEBUG("write complete\n");
+	outb(ctrl.val,CTRL_PORT(s));
+	
     } else {
+	DEBUG("disabling output buffers to allow input\n");
+	// disable output drivers for reading
+	ctrl.val = inb(CTRL_PORT(s));
+	ctrl.bidir_en =  1; // active low to enable output
+	outb(ctrl.val,CTRL_PORT(s));
+
+	DEBUG("reading data\n");
 	// actually input the data
-	*data = inb(DATA_PORT(s->base_port));
-	DEBUG("data read (%c)\n",*data);
+	*data = inb(DATA_PORT(s));
+	
+	DEBUG("data read was %c\n",*data);
     }
 
+    DEBUG("operation complete\n");
+    
     rc = 1; //success
 
  out:
@@ -231,7 +238,8 @@ static int write(void *state, uint8_t *src)
 }
 
 
-
+// This tells the chardev abstraction whether we are
+// currently in a state where we can read or write, etc.
 static int status(void *state)
 {
     struct parport_state *s = (struct parport_state *)state;
@@ -250,36 +258,61 @@ static int status(void *state)
     }
 }
     
-    
+// Note that this device only fires an interrupt if the attached device
+// raises its ack signal and we have this configured to produce an interrupt
+// it does *not* raise an interrupt after every character unless the attached
+// device (e.g., printer) will do that.
 static int interrupt_handler (excp_entry_t * excp, excp_vec_t vec, void *state)
 {
+    STATE_LOCK_CONF;
     struct parport_state *s = (struct parport_state *)state;
 
-    DEBUG("interrupt - device %s!\n",s->dev->dev.name);
+    DEBUG("interrupt received - byte complete\n");
 
+    STATE_LOCK(s);
     s->state=READY;
+    STATE_UNLOCK(s);
     
     IRQ_HANDLER_END();
     
     return 0;
 }
 
-
+// Put the device into a known state before we do anything else
 static int init(struct parport_state *s)
 {
-    DEBUG("no initialization - will only do trivial mode\n");
+    ctrl_reg_t ctrl;
+
+    ctrl.val = inb(CTRL_PORT(s));
+
+    DEBUG("initial control value 0x%02x\n",ctrl);
+
+    // set the port to output with interrupts enabled and printer selected
+    ctrl.val=0;        // bidir = 0, which means we are in output mode
+    ctrl.select   = 1; // attached device selected
+    ctrl.init     = 1; // active low => 1 means we are not initializing it
+    ctrl.irq_en   = 1; // interrupt if we get an ack on the line
+    
+    DEBUG("writing config %02x\n",ctrl.val);
+    
+    outb(ctrl.val,CTRL_PORT(s));
+    
     return 0;
 }
 
 
-struct nk_char_dev_int interface =  {
+///////////////////////////////////////////////////////////////////
+// Interface definition which will be used to register the device
+// It consists of function pointers to earlier functions.
+static struct nk_char_dev_int interface =  {
     .get_characteristics = get_characteristics,
     .read = read,
     .write = write,
     .status = status,
 };
 
-
+// start up one device that is located at the given port and interrupt request line
+// and that we want to give the given name
 static int bringup(uint16_t port, uint8_t irq, char *name)
 {
     struct parport_state *s = malloc(sizeof(*s));
@@ -293,17 +326,21 @@ static int bringup(uint16_t port, uint8_t irq, char *name)
 
     spinlock_init(&s->lock);
 
+    // establish our state
     s->base_port = port;
     s->irq = irq;
 
     // now register our interrupt handler, though we will probably
     // never use it in this code at all.
     // if the interrupt fires, s will be handed to it
+
     if (register_irq_handler(s->irq,interrupt_handler,s)) {
 	ERROR("failed to register interrupt handler for IRQ %d\n",s->irq);
 	return -1;
     }
 
+    // Now register ourselves with the chardev subsystem as a new
+    // character device with the given interface and state
     s->dev = nk_char_dev_register(name,0,&interface,s);
 
     if (!s->dev) {
@@ -311,11 +348,13 @@ static int bringup(uint16_t port, uint8_t irq, char *name)
 	return -1;
     }
 
+    // initialize the device to a known state
     if (init(s)) {
 	ERROR("failed to initialize %s\n",name);
 	return -1;
     }
 
+    // begin listening to interrupts from the device
     nk_unmask_irq(s->irq);
 
     INFO("detected and initialized %s (base=%x,irq=%d)\n",s->dev->dev.name,s->base_port,s->irq);
@@ -335,7 +374,7 @@ static int discover_and_bringup_devices()
     return bringup(PARPORT0_BASE,PARPORT0_IRQ,"parport0");
 }
 
-
+// Called by the kernel to find and setup all parallel port devices
 int nk_parport_init()
 {
     if (discover_and_bringup_devices()) {

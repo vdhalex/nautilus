@@ -1,1 +1,1 @@
-make isoimage && qemu-system-x86_64 -smp 2 -m 2048 -vga virtio -serial stdio -cdrom nautilus.iso 
+make isoimage && ~/cs343/tools/bin/qemu-system-x86_64 -smp 2 -m 2048 -vga virtio -parallel file:par.out -serial stdio -cdrom nautilus.iso 
