@@ -1147,63 +1147,70 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
     struct virtio_gpu_cursor_pos curr_pos;
     struct virtio_gpu_ctrl_hdr update_cursor_req;
     struct virtio_gpu_update_cursor cursor_resp;
-    ZERO(&curr_pos);
-    ZERO(&update_cursor_req);
-    ZERO(&cursor_resp);
 
     int y = 384; // setting y to a default value for this test
     
-    for (int x_i = 0; x_i < 1024; x_i++) {
+    for (int x_i = 0; x_i < 1000; x_i++) {
+        ZERO(&curr_pos);
+        ZERO(&update_cursor_req);
+        ZERO(&cursor_resp);
         // fill in new cursor information
         update_cursor_req.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
-        curr_pos.x = x_i;
+        curr_pos.x = 512;
         curr_pos.y = y;
         curr_pos.scanout_id = 0;
 
         cursor_resp.pos = curr_pos;
         cursor_resp.resource_id = MY_RID;
+        cursor_resp.hot_x = 0;
+        cursor_resp.hot_y = 0;
+
+        // cursor_resp.pos = curr_pos;
+        // cursor_resp.resource_id = MY_RID;
 
         if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &cursor_resp, sizeof(cursor_resp))) {
             ERROR("Failed to update cursor at %u\n", x_i);
             return -1;
         }
 
-        ZERO(&xfer_req);
-        ZERO(&xfer_resp);
+        DEBUG("Cursor response if %x\n", cursor_resp.hdr.type);
+
+        // ZERO(&xfer_req);
+        // ZERO(&xfer_resp);
         
-        xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+        // xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
         
-        xfer_req.r=disp_info.pmodes[0].r;
-        xfer_req.offset = 0;
-        xfer_req.resource_id=MY_RID;
+        // xfer_req.r=disp_info.pmodes[0].r;
+        // xfer_req.offset = 0;
+        // xfer_req.resource_id=MY_RID;
         
-        if (transact_rw(dev,
-                0,
-                &xfer_req,
-                sizeof(xfer_req),
-                &xfer_resp,
-                sizeof(xfer_resp))) {
-            ERROR("Failed to transfer to host\n");
-            return -1;
-        }
+        // if (transact_rw(dev,
+        //         0,
+        //         &xfer_req,
+        //         sizeof(xfer_req),
+        //         &xfer_resp,
+        //         sizeof(xfer_resp))) {
+        //     ERROR("Failed to transfer to host\n");
+        //     return -1;
+        // }
         
-        ZERO(&flush_req);
-        ZERO(&flush_resp);
+        // ZERO(&flush_req);
+        // ZERO(&flush_resp);
         
-        flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+        // flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
         
-        flush_req.r=disp_info.pmodes[0].r;
-        flush_req.resource_id=MY_RID;
+        // flush_req.r=disp_info.pmodes[0].r;
+        // flush_req.resource_id=MY_RID;
         
-        if (transact_rw(dev,
-                0,
-                &flush_req,
-                sizeof(flush_req),
-                &flush_resp,
-                sizeof(flush_resp))) {
-            ERROR("Failed to flush\n");
-            return -1;
-        }
+        // if (transact_rw(dev,
+        //         0,
+        //         &flush_req,
+        //         sizeof(flush_req),
+        //         &flush_resp,
+        //         sizeof(flush_resp))) {
+        //     ERROR("Failed to flush\n");
+        //     return -1;
+        // }
     }
 
     DEBUG("Now attempting to switch back to VGA mode\n");
