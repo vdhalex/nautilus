@@ -577,10 +577,26 @@ static int transact_base(struct virtio_pci_dev *dev,
     //dump_descriptors(vq,0,8);
 
     //DEBUG("starting transaction on index %hu\n",didx);
-    // fix to user the relevant notify addr 
-    virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
+    // fix to user the relevant notify addr
+    // compute notify addr given the qidx
+
+    // cap.offset + queue_notify_off * notify_off_multiplier
+    //
+    // dev->notify_base_addr + qidx * dev->notify_off_multiplier
+    // 
+    // probably not
+    // probably should:
+    //
+    // do queue select, then read queue_notify_offset, then
+    // multiply by notify_off_multplier, then add to notify_base_addr
+    //
+    
+    
+    //virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
 
     //DEBUG("request initiated\n");
+
+    virtio_pci_virtqueue_notify(dev, qidx);
 
     do {
       usedidx = virtio_pci_atomic_load(&virtq->vq.used->idx);
@@ -1150,10 +1166,17 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 
     int y = 384; // setting y to a default value for this test
     
+<<<<<<< HEAD
     for (int x_i = 0; x_i < 1000; x_i++) {
         ZERO(&curr_pos);
         ZERO(&update_cursor_req);
         ZERO(&cursor_resp);
+=======
+    for (int x_i = 0; x_i < 1024; x_i++) {
+
+
+
+>>>>>>> 18b5a8846d92fe962e523c1c2aa5f120f3fad62c
         // fill in new cursor information
         update_cursor_req.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
         curr_pos.x = 512;
@@ -1168,6 +1191,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         // cursor_resp.pos = curr_pos;
         // cursor_resp.resource_id = MY_RID;
 
+	DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
+
         if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &cursor_resp, sizeof(cursor_resp))) {
             ERROR("Failed to update cursor at %u\n", x_i);
             return -1;
@@ -1180,9 +1205,17 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         
         // xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
         
+<<<<<<< HEAD
         // xfer_req.r=disp_info.pmodes[0].r;
         // xfer_req.offset = 0;
         // xfer_req.resource_id=MY_RID;
+=======
+        xfer_req.r=disp_info.pmodes[0].r;
+        xfer_req.offset = 0;
+        xfer_req.resource_id=MY_RID;
+	
+	DEBUG("About to enter  VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D\n");
+>>>>>>> 18b5a8846d92fe962e523c1c2aa5f120f3fad62c
         
         // if (transact_rw(dev,
         //         0,
