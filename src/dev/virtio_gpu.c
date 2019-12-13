@@ -248,145 +248,6 @@ struct virtio_gpu_update_cursor {
 };
 
 /************************************************************
- ****************** gpu ops for kernel ********************
- ************************************************************/
-// NONE EXIST CURRENTLY
-
-/*
-static void fill_hdr_desc(struct virtq *vq, struct virtio_blk_req *hdr, uint16_t hdr_index, uint16_t buf_index)
-{
-    struct virtq_desc *hdr_desc = &vq->desc[hdr_index];
-
-    hdr_desc->addr = (uint64_t) hdr;
-    hdr_desc->len = HEADER_DESC_LEN;
-    hdr_desc->flags = 0;
-    hdr_desc->next = buf_index;
-    hdr_desc->flags |= VIRTQ_DESC_F_NEXT;
-}
-
-static void fill_buf_desc(struct virtq *vq, uint32_t size, uint64_t count, uint8_t *dest, uint16_t buf_index, uint16_t stat_index, uint8_t write)
-{
-    struct virtq_desc *buf_desc = &vq->desc[buf_index];
-
-    buf_desc->addr = (uint64_t) dest;
-    buf_desc->len = size * count;
-    buf_desc->flags |= write ? 0 : VIRTQ_DESC_F_WRITE;
-    buf_desc->next = stat_index;
-    buf_desc->flags |= VIRTQ_DESC_F_NEXT;
-}
-
-static void fill_stat_desc(struct virtq *vq, uint8_t *status, uint16_t stat_index)
-{
-    struct virtq_desc *stat_desc = &vq->desc[stat_index];
-
-    stat_desc->addr = (uint64_t) status;  
-    stat_desc->flags = 0;
-    stat_desc->flags |= VIRTQ_DESC_F_WRITE;
-    stat_desc->len = STATUS_DESC_LEN;
-    stat_desc->next = 0;
-}
-
-*/
-/*
-static int read_write_blocks(struct virtio_blk_dev *dev, uint64_t blocknum, uint64_t count, uint8_t *src_dest, void (*callback)(nk_block_dev_status_t, void *), void *context, uint8_t write) 
-{
-    DEBUG("%s blocknum = %lu count = %lu buf = %p callback = %p context = %p\n", write ? "write" : "read", blocknum, count, src_dest, callback, context);
-    
-    if (blocknum + count > dev->blk_config->capacity) {
-        ERROR("request goes beyond device capacity\n");
-        return -1;
-    }
-
-    if (write && (FBIT_ISSET(dev->virtio_dev->feat_accepted,VIRTIO_BLK_F_RO))) {
-	ERROR("attempt to write read-only device\n");
-	return -1;
-    }
-
-    DEBUG("[build request header]\n");
-
-    struct virtio_blk_req *hdr = malloc(sizeof(struct virtio_blk_req));
-
-    if (!hdr) {
-	ERROR("Failed to allocate request header\n");
-	return -1;
-    }
-    
-    memset(hdr, 0, sizeof(struct virtio_blk_req));
-
-    hdr->type = write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
-    hdr->sector = blocknum;
-    hdr->reserved = 0;
-    hdr->status = 0;
-
-    DEBUG("[allocate descriptors]\n");
-
-    uint16_t desc[3];
-
-    if (virtio_pci_desc_chain_alloc(dev->virtio_dev,VIRTIO_BLK_REQUEST_QUEUE,desc,3)) {
-	ERROR("Failed to allocate descriptor chain\n");
-	free(hdr);
-	return -1;
-    }
-    
-    uint16_t hdr_index = desc[0];
-    uint16_t buf_index = desc[1];
-    uint16_t stat_index = desc[2];
-
-    struct virtq *vq = &dev->virtio_dev->virtq[VIRTIO_BLK_REQUEST_QUEUE].vq;
-
-    DEBUG("[create descriptors]\n");
-
-    DEBUG("[create header descriptor]\n");
-    fill_hdr_desc(vq, hdr, hdr_index, buf_index);
-
-    DEBUG("[create buffer descriptor]\n");
-    fill_buf_desc(vq, dev->blk_config->blk_size, count, src_dest, buf_index, stat_index, write);
-
-    DEBUG("[create status descriptor]\n");
-    fill_stat_desc(vq, &hdr->status, stat_index);
-
-    dev->blk_callb[hdr_index].callback = callback;
-    dev->blk_callb[hdr_index].context = context;
-
-    DEBUG("request in indexes: header = %d, buffer = %d, status = %d\n", hdr_index, buf_index, stat_index);
-
-    // update avail ring
-    vq->avail->ring[vq->avail->idx % vq->qsz] = hdr_index;
-    mbarrier();
-    vq->avail->idx++;
-    mbarrier();
-    
-    DEBUG("available ring's hdr index = %d, at ring index %d\n", hdr_index, vq->avail->idx - 1);
-    DEBUG("available ring's ring index for next hdr = %u\n", vq->avail->idx);
-
-    DEBUG("[notify device]\n");
-    virtio_pci_write_regw(dev->virtio_dev, QUEUE_NOTIFY, VIRTIO_BLK_REQUEST_QUEUE);
-    
-    return 0;
-}
-
-static int read_blocks(void *state, uint64_t blocknum, uint64_t count, uint8_t *dest, void (*callback)(nk_block_dev_status_t, void *), void *context)
-{
-    struct virtio_blk_dev *dev = (struct virtio_blk_dev *) state;
-
-    return read_write_blocks(dev, blocknum, count, dest, callback, context, 0);
-}
-
-static int write_blocks(void *state, uint64_t blocknum, uint64_t count, uint8_t *src, void (*callback)(nk_block_dev_status_t,void *), void *context)
-{
-    struct virtio_blk_dev *dev = (struct virtio_blk_dev *) state;
-
-    return read_write_blocks(dev, blocknum, count, src, callback, context, 1);
-}
-
-static struct nk_block_dev_int ops = {
-    .get_characteristics = get_characteristics,
-    .read_blocks = read_blocks,
-    .write_blocks = write_blocks,
-};
-
-
-/************************************************************
  *************** interrupt handler & callback ***************
  ************************************************************/
 static void teardown(struct virtio_pci_dev *dev) 
@@ -694,7 +555,8 @@ static int transact_rrw(struct virtio_pci_dev *dev,
 }
 
 // resource id "0" means "disabled" or "none"
-#define MY_RID 42 
+#define MY_RID 42
+#define CURSOR_RID 41
 
 static int test_gpu(struct virtio_pci_dev *dev) {
 
@@ -1159,24 +1021,85 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
     
     DEBUG("flush complete - rc=%x\n",flush_resp.type);
 
+    ////////////////////////////////////////
+    ////////////////////////////////////////
     // NOW ATTEMPTING TO KEEP TRACK OF MOUSE
+    ////////////////////////////////////////
+    ////////////////////////////////////////
+
+    uint64_t cursor_fb_length = 64 * 64 * 4;
+    uint32_t *cursor_framebuffer = malloc(cursor_fb_length);
+
+    if (!cursor_framebuffer) {
+        DEBUG("Failed to allocate cursor framebuffer of length %lu", cursor_fb_length);
+    } else {
+        DEBUG("Allocated cursor framebuffer of length %lu", cursor_fb_length);
+    }
+    memset(cursor_framebuffer, 1, cursor_fb_length); // making it white
+
+    struct virtio_gpu_resource_create_2d cursor_create_2d_req;
+    struct virtio_gpu_ctrl_hdr cursor_create_2d_resp;
+
+    ZERO(&cursor_create_2d_req);
+    ZERO(&cursor_create_2d_resp);
+    
+    cursor_create_2d_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+    cursor_create_2d_req.width = 64;
+    cursor_create_2d_req.height = 64;
+    cursor_create_2d_req.format = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+    cursor_create_2d_req.resource_id = CURSOR_RID;
+
+    DEBUG("creating cursor 2d %u x %u @ %d id=%u\n",cursor_create_2d_req.width,cursor_create_2d_req.height,cursor_create_2d_req.format,cursor_create_2d_req.resource_id);
+    
+    if (transact_rw(dev,
+		    0,
+		    &cursor_create_2d_req,
+		    sizeof(cursor_create_2d_req),
+		    &cursor_create_2d_resp,
+		    sizeof(cursor_create_2d_resp))) {
+	ERROR("Failed to create cursor 2d resource\n");
+	return -1;
+    }
+
+    DEBUG("create cursor 2d resource complete - rc=%x\n",cursor_create_2d_resp.type);
+     
+    struct virtio_gpu_resource_attach_backing cursor_backing_req;
+    struct virtio_gpu_mem_entry cursor_backing_entry;
+    struct virtio_gpu_ctrl_hdr cursor_backing_resp;
+
+    ZERO(&cursor_backing_req);
+    ZERO(&cursor_backing_entry);
+    ZERO(&cursor_backing_resp);
+	
+    cursor_backing_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+
+    cursor_backing_req.resource_id = CURSOR_RID;
+    cursor_backing_req.nr_entries = 1;
+
+    cursor_backing_entry.addr = (uint64_t) cursor_framebuffer;
+    cursor_backing_entry.length = cursor_fb_length;
+
+    if (transact_rrw(dev,
+		     0,
+		     &cursor_backing_req,
+		     sizeof(cursor_backing_req),
+		     &cursor_backing_entry,
+		     sizeof(cursor_backing_entry),
+		     &cursor_backing_resp,
+		     sizeof(cursor_backing_resp))) {
+	ERROR("Failed to attach cursor backing\n");
+	return -1;
+    }
+
+    DEBUG("attach cursor backing complete - rc=%x\n",cursor_backing_resp.type);
+
     struct virtio_gpu_cursor_pos curr_pos;
     struct virtio_gpu_ctrl_hdr update_cursor_req;
     struct virtio_gpu_update_cursor cursor_resp;
 
     int y = 384; // setting y to a default value for this test
     
-<<<<<<< HEAD
-    for (int x_i = 0; x_i < 1000; x_i++) {
-        ZERO(&curr_pos);
-        ZERO(&update_cursor_req);
-        ZERO(&cursor_resp);
-=======
     for (int x_i = 0; x_i < 1024; x_i++) {
-
-
-
->>>>>>> 18b5a8846d92fe962e523c1c2aa5f120f3fad62c
         // fill in new cursor information
         update_cursor_req.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
         curr_pos.x = 512;
@@ -1184,14 +1107,14 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         curr_pos.scanout_id = 0;
 
         cursor_resp.pos = curr_pos;
-        cursor_resp.resource_id = MY_RID;
+        cursor_resp.resource_id = CURSOR_RID;
         cursor_resp.hot_x = 0;
         cursor_resp.hot_y = 0;
 
         // cursor_resp.pos = curr_pos;
         // cursor_resp.resource_id = MY_RID;
 
-	DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
+	    DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
 
         if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &cursor_resp, sizeof(cursor_resp))) {
             ERROR("Failed to update cursor at %u\n", x_i);
@@ -1205,17 +1128,11 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         
         // xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
         
-<<<<<<< HEAD
         // xfer_req.r=disp_info.pmodes[0].r;
         // xfer_req.offset = 0;
         // xfer_req.resource_id=MY_RID;
-=======
-        xfer_req.r=disp_info.pmodes[0].r;
-        xfer_req.offset = 0;
-        xfer_req.resource_id=MY_RID;
 	
-	DEBUG("About to enter  VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D\n");
->>>>>>> 18b5a8846d92fe962e523c1c2aa5f120f3fad62c
+	    // DEBUG("About to enter  VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D\n");
         
         // if (transact_rw(dev,
         //         0,
