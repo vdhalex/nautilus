@@ -375,7 +375,7 @@ static uint64_t select_features(uint64_t features)
 
 static int handler(excp_entry_t *exp, excp_vec_t vec, void *priv_data)
 {
-    //DEBUG("Interrupt invoked\n");
+    DEBUG("Interrupt invoked\n");
     IRQ_HANDLER_END();
     return 0;
 }
@@ -436,24 +436,6 @@ static int transact_base(struct virtio_pci_dev *dev,
     //DEBUG("queue notify offset: %d\n", dev->common->queue_notify_off);
 
     //dump_descriptors(vq,0,8);
-
-    //DEBUG("starting transaction on index %hu\n",didx);
-    // fix to user the relevant notify addr
-    // compute notify addr given the qidx
-
-    // cap.offset + queue_notify_off * notify_off_multiplier
-    //
-    // dev->notify_base_addr + qidx * dev->notify_off_multiplier
-    // 
-    // probably not
-    // probably should:
-    //
-    // do queue select, then read queue_notify_offset, then
-    // multiply by notify_off_multplier, then add to notify_base_addr
-    //
-    
-    
-    //virtio_pci_atomic_store(dev->notify_base_addr, 0xFFFFFFFFF);
 
     //DEBUG("request initiated\n");
 
@@ -1035,7 +1017,10 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
     } else {
         DEBUG("Allocated cursor framebuffer of length %lu", cursor_fb_length);
     }
-    memset(cursor_framebuffer, 1, cursor_fb_length); // making it white
+
+    for (int i=0;i<64*64;i++) {
+	cursor_framebuffer[i]=rand();
+    }
 
     struct virtio_gpu_resource_create_2d cursor_create_2d_req;
     struct virtio_gpu_ctrl_hdr cursor_create_2d_resp;
@@ -1093,35 +1078,64 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 
     DEBUG("attach cursor backing complete - rc=%x\n",cursor_backing_resp.type);
 
-    struct virtio_gpu_cursor_pos curr_pos;
-    struct virtio_gpu_ctrl_hdr update_cursor_req;
-    struct virtio_gpu_update_cursor cursor_resp;
 
-    int y = 384; // setting y to a default value for this test
+    // make sure the host has our cursor data
     
+    struct virtio_gpu_resource_flush cursor_flush_req;
+    struct virtio_gpu_ctrl_hdr cursor_flush_resp;
+
+    ZERO(&cursor_flush_req);
+    ZERO(&cursor_flush_resp);
+    
+    cursor_flush_req.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+	
+    cursor_flush_req.r=disp_info.pmodes[0].r;
+    cursor_flush_req.resource_id=CURSOR_RID;
+    
+    if (transact_rw(dev,
+		    0,
+		    &cursor_flush_req,
+		    sizeof(cursor_flush_req),
+		    &cursor_flush_resp,
+		    sizeof(cursor_flush_resp))) {
+	ERROR("Failed to cursor flush\n");
+	return -1;
+    }
+    
+    DEBUG("cursor flush complete - rc=%x\n",cursor_flush_resp.type);
+    
+
+    struct virtio_gpu_cursor_pos    curr_pos;
+    struct virtio_gpu_update_cursor update_cursor_req;
+    struct virtio_gpu_ctrl_hdr      update_cursor_resp;
+
+
+    
+    for (int y=384;y<768;y++) {
     for (int x_i = 0; x_i < 1024; x_i++) {
+	ZERO(&curr_pos);
+	ZERO(&update_cursor_req);
+	ZERO(&update_cursor_resp);
+	
         // fill in new cursor information
-        update_cursor_req.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
-        curr_pos.x = 512;
+        curr_pos.x = x_i;
         curr_pos.y = y;
         curr_pos.scanout_id = 0;
 
-        cursor_resp.pos = curr_pos;
-        cursor_resp.resource_id = CURSOR_RID;
-        cursor_resp.hot_x = 0;
-        cursor_resp.hot_y = 0;
+        update_cursor_req.hdr.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
+        update_cursor_req.pos = curr_pos;
+        update_cursor_req.resource_id = CURSOR_RID;
+        update_cursor_req.hot_x = 0;
+        update_cursor_req.hot_y = 0;
 
-        // cursor_resp.pos = curr_pos;
-        // cursor_resp.resource_id = MY_RID;
+	DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
 
-	    DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
-
-        if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &cursor_resp, sizeof(cursor_resp))) {
+        if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &update_cursor_resp, sizeof(update_cursor_resp))) {
             ERROR("Failed to update cursor at %u\n", x_i);
             return -1;
         }
-
-        DEBUG("Cursor response if %x\n", cursor_resp.hdr.type);
+	
+        DEBUG("Cursor response if %x\n", update_cursor_resp.type);
 
         // ZERO(&xfer_req);
         // ZERO(&xfer_resp);
@@ -1163,6 +1177,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         // }
     }
 
+    }
+    
     DEBUG("Now attempting to switch back to VGA mode\n");
  
     struct virtio_gpu_resource_detach_backing detach_req;
