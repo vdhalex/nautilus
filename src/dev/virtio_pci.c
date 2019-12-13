@@ -1023,21 +1023,15 @@ int virtio_pci_desc_chain_free(struct virtio_pci_dev *dev, uint16_t qidx, uint16
 int virtio_pci_virtqueue_notify(struct virtio_pci_dev *dev, uint16_t qidx) 
 {  
     if (dev->model == VIRTIO_PCI_LEGACY_MODEL) {
-	ERROR("Attempted virtio_pci_virtqueue_notify on legacy model\n");
-	return -1;
+	virtio_pci_write_regw(dev,QUEUE_NOTIFY,qidx);
+	return 0;
     } else if (dev->model == VIRTIO_PCI_MODERN_MODEL) {
+	
 	virtio_pci_atomic_store(&dev->common->queue_select, qidx);
 	
 	uint64_t offset = virtio_pci_atomic_load(&dev->common->queue_notify_off);
 	uint64_t mult_offset = offset * dev->notify_off_multiplier;
-	uint32_t *addr = dev->notify_base_addr+mult_offset;
-
-
-
-	DEBUG("qidx = %lx\n", qidx);
-	DEBUG("mult_offset = %lx\n", mult_offset);
-	DEBUG("offset = %lx\n", offset);
-	DEBUG("addr = %lx\n", addr);
+	uint32_t *addr = (uint32_t*)(((addr_t)dev->notify_base_addr)+mult_offset);
 
 	virtio_pci_atomic_store(addr, 0xFFFFFFFF);
 
