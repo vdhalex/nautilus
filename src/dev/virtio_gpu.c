@@ -375,7 +375,7 @@ static uint64_t select_features(uint64_t features)
 
 static int handler(excp_entry_t *exp, excp_vec_t vec, void *priv_data)
 {
-    DEBUG("Interrupt invoked\n");
+    //    DEBUG("Interrupt invoked\n");
     IRQ_HANDLER_END();
     return 0;
 }
@@ -538,10 +538,12 @@ static int transact_rrw(struct virtio_pci_dev *dev,
 
 // resource id "0" means "disabled" or "none"
 #define MY_RID 42
-#define CURSOR_RID 41
+#define CURSOR_RID 43
 
-static int test_gpu(struct virtio_pci_dev *dev) {
+#define CHECK_RESP(h,ok,errstr) if (h.type!=ok) { ERROR(errstr " rc=%x\n",h.type); return -1; }
 
+static int test_gpu(struct virtio_pci_dev *dev)
+{
     struct virtio_gpu_ctrl_hdr disp_info_req;
     struct virtio_gpu_resp_display_info disp_info;  // not noted as resp since used elsewhere
     ZERO(&disp_info_req);
@@ -558,7 +560,9 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	ERROR("Failed to get display info\n");
 	return -1;
     }
-	
+
+    CHECK_RESP(disp_info.hdr,VIRTIO_GPU_RESP_OK_DISPLAY_INFO,"Failed to get display info");
+
     DEBUG("display info complete: rc=%x\n",disp_info.hdr.type);
 
     DEBUG("Display Info code: %x\n", disp_info.hdr.type);
@@ -593,6 +597,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	ERROR("Failed to create 2d resource\n");
 	return -1;
     }
+
+    CHECK_RESP(create_2d_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to create 2d resource");
 
     DEBUG("create 2d resource complete - rc=%x\n",create_2d_resp.type);
 
@@ -644,6 +650,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(backing_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to attach backing");
+
     DEBUG("attach backing complete - rc=%x\n",backing_resp.type);
 
     struct virtio_gpu_set_scanout setso_req;
@@ -666,6 +674,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	ERROR("Failed to set scanout\n");
 	return -1;
     }
+
+    CHECK_RESP(setso_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to set scanout");
 
     DEBUG("set scanout complete - rc=%x\n",setso_resp.type);
     
@@ -691,6 +701,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(xfer_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to transfer to host");
+
     DEBUG("xfer complete - rc=%x\n",xfer_resp.type);
 
     struct virtio_gpu_resource_flush flush_req;
@@ -714,6 +726,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	return -1;
     }
     
+    CHECK_RESP(flush_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to flush resource");
+
     DEBUG("flush complete - rc=%x\n",flush_resp.type);
 
     // we'll walk through first 32 MB
@@ -743,6 +757,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	    return -1;
 	}
 	
+	CHECK_RESP(flush_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to transfer to host");
+	
 	ZERO(&flush_req);
 	ZERO(&flush_resp);
 	
@@ -750,6 +766,7 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	
 	flush_req.r=disp_info.pmodes[0].r;
 	flush_req.resource_id=MY_RID;
+
 	
 	if (transact_rw(dev,
 			0,
@@ -760,6 +777,7 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	    ERROR("Failed to flush\n");
 	    return -1;
 	}
+	CHECK_RESP(flush_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to flush resource");
 
     }
 
@@ -785,6 +803,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(detach_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to detach backing");
+
     DEBUG("detach complete - rc=%x\n",detach_resp.type);
 
 
@@ -805,6 +825,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	ERROR("Failed to reset scanout\n");
 	return -1;
     }
+
+    CHECK_RESP(setso_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to reset scanout");
 
     DEBUG("reset scanout complete - rc=%x\n",setso_resp.type);
 
@@ -828,6 +850,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(unref_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to unref our resource");
+
     DEBUG("unref complete - rc=%x\n",unref_resp.type);
 
     DEBUG("Freeing framebuffer\n");
@@ -835,7 +859,8 @@ static int test_gpu(struct virtio_pci_dev *dev) {
     free(framebuffer);
 }
 
-static int run_graphics_mode(struct virtio_pci_dev *dev) {
+static int run_graphics_mode(struct virtio_pci_dev *dev)
+{
     struct virtio_gpu_ctrl_hdr disp_info_req;
     struct virtio_gpu_resp_display_info disp_info;  // not noted as resp since used elsewhere
     ZERO(&disp_info_req);
@@ -853,6 +878,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 	
+    CHECK_RESP(disp_info.hdr,VIRTIO_GPU_RESP_OK_DISPLAY_INFO,"Failed to get display info");
+
     DEBUG("display info complete: rc=%x\n",disp_info.hdr.type);
 
     DEBUG("Display Info code: %x\n", disp_info.hdr.type);
@@ -881,6 +908,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(create_2d_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to create 2d resource");
+    
     DEBUG("create 2d resource complete - rc=%x\n",create_2d_resp.type);
 
     // create local framebuffer
@@ -931,6 +960,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(backing_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to attach backing");
+
     DEBUG("attach backing complete - rc=%x\n",backing_resp.type);
 
     struct virtio_gpu_set_scanout setso_req;
@@ -953,6 +984,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	ERROR("Failed to set scanout\n");
 	return -1;
     }
+
+    CHECK_RESP(setso_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to set scanout");
 
     DEBUG("set scanout complete - rc=%x\n",setso_resp.type);
     
@@ -978,6 +1011,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(xfer_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to transfer to host");
+
     DEBUG("xfer complete - rc=%x\n",xfer_resp.type);
 
     struct virtio_gpu_resource_flush flush_req;
@@ -1001,6 +1036,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
     
+    CHECK_RESP(flush_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to flush resource");
+
     DEBUG("flush complete - rc=%x\n",flush_resp.type);
 
     ////////////////////////////////////////
@@ -1015,11 +1052,22 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
     if (!cursor_framebuffer) {
         DEBUG("Failed to allocate cursor framebuffer of length %lu", cursor_fb_length);
     } else {
-        DEBUG("Allocated cursor framebuffer of length %lu", cursor_fb_length);
+        DEBUG("Allocated cursor framebuffer of length %lu\n", cursor_fb_length);
     }
 
-    for (int i=0;i<64*64;i++) {
-	cursor_framebuffer[i]=rand();
+    memset(cursor_framebuffer,0,64*64*4);
+#define MIN(x,y) ((x)<(y)?(x):(y))
+#define SIZE   64
+#define STROKE 8
+#define COLOR 0xffad0f6a
+//#define COLOR 0x6a0fad00
+//#define COLOR 0x00ad0f6a
+    for (int i=0;i<SIZE;i++) {
+	for (int j=0;j<STROKE;j++) { 
+	    cursor_framebuffer[i*SIZE+j]=COLOR;
+	    cursor_framebuffer[i*SIZE-STROKE+j]=COLOR;
+	    cursor_framebuffer[MIN(i*SIZE+i+j,SIZE*SIZE-1)]=COLOR;
+	}
     }
 
     struct virtio_gpu_resource_create_2d cursor_create_2d_req;
@@ -1046,6 +1094,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(cursor_create_2d_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to create cursor resource");
+    
     DEBUG("create cursor 2d resource complete - rc=%x\n",cursor_create_2d_resp.type);
      
     struct virtio_gpu_resource_attach_backing cursor_backing_req;
@@ -1076,11 +1126,43 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(cursor_backing_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to attach backing to cursor resource");
+    
     DEBUG("attach cursor backing complete - rc=%x\n",cursor_backing_resp.type);
 
+    struct virtio_gpu_transfer_to_host_2d cursor_xfer_req;
+    struct virtio_gpu_ctrl_hdr cursor_xfer_resp;
 
-    // make sure the host has our cursor data
+    ZERO(&cursor_xfer_req);
+    ZERO(&cursor_xfer_resp);
     
+    cursor_xfer_req.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+
+    cursor_xfer_req.r.x=0;
+    cursor_xfer_req.r.y=0;
+    cursor_xfer_req.r.width=64;
+    cursor_xfer_req.r.height=64;
+    cursor_xfer_req.offset = 0;
+    cursor_xfer_req.resource_id=CURSOR_RID;
+
+    if (transact_rw(dev,
+		    0,
+		    &cursor_xfer_req,
+		    sizeof(cursor_xfer_req),
+		    &cursor_xfer_resp,
+		    sizeof(cursor_xfer_resp))) {
+	ERROR("Failed to transfer cursor to host\n");
+	return -1;
+    }
+
+    CHECK_RESP(cursor_xfer_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to transfer cursor data to host");
+
+    DEBUG("cursor xfer complete - rc=%x\n",cursor_xfer_resp.type);
+
+    // make sure the host has our cursor data - probably don't need to
+    // do this flush since the cursor resource isn't attached to a scanout
+
+#if 0
     struct virtio_gpu_resource_flush cursor_flush_req;
     struct virtio_gpu_ctrl_hdr cursor_flush_resp;
 
@@ -1101,18 +1183,20 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	ERROR("Failed to cursor flush\n");
 	return -1;
     }
+
+    CHECK_RESP(cursor_flush_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to flush cursor resource");
     
     DEBUG("cursor flush complete - rc=%x\n",cursor_flush_resp.type);
     
-
+#endif
+    
     struct virtio_gpu_cursor_pos    curr_pos;
     struct virtio_gpu_update_cursor update_cursor_req;
     struct virtio_gpu_ctrl_hdr      update_cursor_resp;
 
-
-    
-    for (int y=384;y<768;y++) {
-    for (int x_i = 0; x_i < 1024; x_i++) {
+    // again:
+    for (int y=0;y<480;y++) {
+    for (int x_i = 0; x_i < 640; x_i++) {
 	ZERO(&curr_pos);
 	ZERO(&update_cursor_req);
 	ZERO(&update_cursor_resp);
@@ -1128,14 +1212,18 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
         update_cursor_req.hot_x = 0;
         update_cursor_req.hot_y = 0;
 
-	DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
+	//	DEBUG("About to enter VIRTIO_GPU_CMD_UPDATE_CURSOR\n");
 
         if (transact_rw(dev, 1, &update_cursor_req, sizeof(update_cursor_req), &update_cursor_resp, sizeof(update_cursor_resp))) {
             ERROR("Failed to update cursor at %u\n", x_i);
             return -1;
         }
+
+	//	while(1);
 	
-        DEBUG("Cursor response if %x\n", update_cursor_resp.type);
+ 	//CHECK_RESP(update_cursor_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to update cursor");
+	
+        //DEBUG("Cursor response is %x\n", update_cursor_resp.type);
 
         // ZERO(&xfer_req);
         // ZERO(&xfer_resp);
@@ -1178,6 +1266,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
     }
 
     }
+
+    //    goto again;
     
     DEBUG("Now attempting to switch back to VGA mode\n");
  
@@ -1201,6 +1291,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	return -1;
     }
 
+    CHECK_RESP(detach_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to detach backing");
+    
     DEBUG("detach complete - rc=%x\n",detach_resp.type);
 
 
@@ -1221,6 +1313,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	ERROR("Failed to reset scanout\n");
 	return -1;
     }
+
+    CHECK_RESP(setso_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to reset scanout");
 
     DEBUG("reset scanout complete - rc=%x\n",setso_resp.type);
 
@@ -1243,6 +1337,8 @@ static int run_graphics_mode(struct virtio_pci_dev *dev) {
 	ERROR("Failed to unref our resource\n");
 	return -1;
     }
+
+    CHECK_RESP(unref_resp,VIRTIO_GPU_RESP_OK_NODATA,"Failed to unref our resource");
 
     DEBUG("unref complete - rc=%x\n",unref_resp.type);
 
@@ -1387,7 +1483,8 @@ int virtio_gpu_init(struct virtio_pci_dev *dev)
     // test_write(d);
     DEBUG("****** Running graphics mode ******\n");
     if (run_graphics_mode(dev)) {
-        DEBUG("test gpu failed");
+        ERROR("test gpu failed\n");
+	return -1;
     }
     
     // DEBUG("******* Running descriptor chain test *******\n");
